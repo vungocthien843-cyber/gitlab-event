@@ -36,11 +36,6 @@ async def agent_status():
 # Trong thực tế, KHÔNG hardcode ở đây mà nên để trong file biến môi trường (.env)
 WEBHOOK_SECRET = "12345678" 
 
-
-WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "mat_khau_bi_mat_cua_thien_123")
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "ghp_your_personal_access_token_here")
-
-
 # --- HÀM PHỤ: LẤY NỘI DUNG RAW CỦA FILE TỪ GITHUB ---
 async def fetch_file_content_from_github(repo_full_name: str, commit_id: str, file_path: str) -> str:
     """Gọi API GitHub để lấy nội dung thô (raw) của một file tại một commit cụ thể."""
