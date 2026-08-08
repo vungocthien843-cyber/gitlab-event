@@ -61,7 +61,7 @@ async def fetch_file_content_from_github(repo_full_name: str, commit_id: str, fi
 
 
 # --- ROUTER CHÍNH ---
-@app.post("/webhook/github")
+@router.post("/webhook/github")
 async def github_webhook_handler(
     request: Request,
     x_github_event: str = Header(None),
