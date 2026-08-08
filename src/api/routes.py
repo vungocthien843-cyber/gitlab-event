@@ -43,16 +43,12 @@ GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
 # --- HÀM PHỤ: LẤY NỘI DUNG RAW CỦA FILE TỪ GITHUB ---
 async def fetch_file_content_from_github(repo_full_name: str, commit_id: str, file_path: str) -> str:
-    """Gọi API GitHub để lấy nội dung thô (raw) của một file tại một commit cụ thể."""
-    # Nếu không có token, báo lỗi ngay lập tức
-    if not GITHUB_TOKEN:
-        print("LỖI: Chưa cấu hình GITHUB_TOKEN")
-        return None
-
     url = f"https://api.github.com/repos/{repo_full_name}/contents/{file_path}?ref={commit_id}"
+    
     headers = {
-        "Authorization": f"token {GITHUB_TOKEN}",
-        "Accept": "application/vnd.github.v3.raw"
+        "Authorization": f"token {GITHUB_TOKEN}", # Dùng 'token' hoặc 'Bearer'
+        "Accept": "application/vnd.github.v3.raw",
+        "X-GitHub-Api-Version": "2022-11-28" 
     }
     
     async with httpx.AsyncClient() as client:
@@ -61,7 +57,13 @@ async def fetch_file_content_from_github(repo_full_name: str, commit_id: str, fi
     if response.status_code == 200:
         return response.text
     else:
-        print(f"Lỗi lấy file {file_path}: {response.status_code} - {response.text}")
+        # IN ĐẬM LỖI RA VERCEL ĐỂ BẮT BỆNH
+        print(f"=====================================")
+        print(f"🔥 LỖI LẤY FILE: {file_path}")
+        print(f"🔥 TRẠNG THÁI: {response.status_code}")
+        print(f"🔥 CHI TIẾT LỖI TỪ GITHUB: {response.text}")
+        print(f"🔥 URL ĐÃ GỌI: {url}")
+        print(f"=====================================")
         return None
 
 # ==========================================
