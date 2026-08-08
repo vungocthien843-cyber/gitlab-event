@@ -133,6 +133,7 @@ async def github_webhook_handler(
     # 4. FETCH NỘI DUNG CODE & ĐÓNG GÓI DỮ LIỆU
     # ------------------------------------------
     files_content_data = [] 
+    errors = [] # Tạo một mảng lưu lỗi
 
     for file_path in yaml_files:
         raw_content = await fetch_file_content_from_github(repo_name, commit_id, file_path)
@@ -142,8 +143,10 @@ async def github_webhook_handler(
                 "file_path": file_path,
                 "content": raw_content
             })
+        else:
+            # Nếu không lấy được file, ghi lại lý do để xem
+            errors.append(f"Không lấy được nội dung cho file: {file_path}")
 
-    # Cấu trúc JSON cuối cùng
     response_data = {
         "status": "Success",
         "metadata": {
@@ -153,10 +156,8 @@ async def github_webhook_handler(
             "repo_name": repo_name,
             "commit_message": latest_commit["message"]
         },
-        "yaml_changes": files_content_data 
+        "yaml_changes": files_content_data,
+        "debug_errors": errors # Xuất mảng lỗi này ra kết quả trả về
     }
-
-    print("--- DỮ LIỆU ĐÃ XỬ LÝ THÀNH CÔNG ---")
-    print(response_data)
 
     return {"status": "success", "data": response_data}
