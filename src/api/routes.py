@@ -1,9 +1,12 @@
 from fastapi import APIRouter, HTTPException
+import hmac
+import hashlib
+import os
+import httpx # Dùng httpx thay cho requests vì FastAPI ưu tiên bất đồng bộ (async)
 
 from src.agents.graph import agent
 from src.models.schemas import ChatRequest, ChatResponse
-import hmac
-import hashlib
+
 from fastapi import FastAPI, Request, Header, HTTPException
 router = APIRouter()
 
@@ -33,15 +36,7 @@ async def agent_status():
 # Trong thực tế, KHÔNG hardcode ở đây mà nên để trong file biến môi trường (.env)
 WEBHOOK_SECRET = "12345678" 
 
-import hmac
-import hashlib
-import os
-import httpx # Dùng httpx thay cho requests vì FastAPI ưu tiên bất đồng bộ (async)
-from fastapi import FastAPI, Request, Header, HTTPException
 
-app = FastAPI()
-
-# --- LẤY BIẾN TỪ MÔI TRƯỜNG ---
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "mat_khau_bi_mat_cua_thien_123")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "ghp_your_personal_access_token_here")
 

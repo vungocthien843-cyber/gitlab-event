@@ -1,13 +1,15 @@
+
+
 # CLAUDE.md
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Two codebases in one repo
 
-| Path | What it is |
-|---|---|
+| Path     | What it is                                                                                          |
+| -------- | --------------------------------------------------------------------------------------------------- |
 | `app/` | **The real project.** IDP Catalog Graph API — the only code that has been written for P-030. |
-| `src/` | Untouched AI20K starter-template boilerplate (LangGraph chat agent). Not part of the product yet. |
+| `src/` | Untouched AI20K starter-template boilerplate (LangGraph chat agent). Not part of the product yet.   |
 
 They are wired separately: `Dockerfile` / `docker-compose.yml` run `app.main:app`; `vercer.json` (filename typo of `vercel.json`, so Vercel does not actually pick it up) points at `src/main.py`; `Makefile` has `run` for `app` and `run-agent-template` for `src`. `tests/conftest.py` imports `src.main`, so the template must stay importable even though the product tests (`tests/test_catalog_api.py`) only touch `app/`.
 
@@ -70,12 +72,12 @@ Rules that keep it that way — break any one and the contract silently drifts:
 
 Exceptions are classified by **how they must be handled**, not by technical cause:
 
-| Class | HTTP | Log | Meaning |
-|---|---|---|---|
-| `ValidationError` | 422 | WARNING, no traceback | User's input is wrong; they fix the file and retry |
-| `SecurityError` | 400 | ERROR, no traceback | Input looks hostile. Client `message` is deliberately vague; details go to `log_message` only |
-| `HumanReviewRequiredError` | 409 | ERROR, no traceback | System understood the input but has no authority to decide (ownership conflict) |
-| `CriticalError` | 500 | CRITICAL + traceback | System can't guarantee a safe state. **The default for anything unclear.** |
+| Class                        | HTTP | Log                   | Meaning                                                                                          |
+| ---------------------------- | ---- | --------------------- | ------------------------------------------------------------------------------------------------ |
+| `ValidationError`          | 422  | WARNING, no traceback | User's input is wrong; they fix the file and retry                                               |
+| `SecurityError`            | 400  | ERROR, no traceback   | Input looks hostile. Client`message` is deliberately vague; details go to `log_message` only |
+| `HumanReviewRequiredError` | 409  | ERROR, no traceback   | System understood the input but has no authority to decide (ownership conflict)                  |
+| `CriticalError`            | 500  | CRITICAL + traceback  | System can't guarantee a safe state.**The default for anything unclear.**                  |
 
 Low-level builtins (`OSError`, `UnicodeDecodeError`, `yaml.YAMLError`) are caught at the layer that understands them and re-raised as one of these with `from exc`. The catch-all `Exception` handler in `main.py` turns anything unforeseen into `CriticalError` — an unknown error must never become a 200.
 
