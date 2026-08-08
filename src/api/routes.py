@@ -51,7 +51,7 @@ async def fetch_file_content_from_github(repo_full_name: str, commit_id: str, fi
 
     url = f"https://api.github.com/repos/{repo_full_name}/contents/{file_path}?ref={commit_id}"
     headers = {
-        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "Authorization": f"token {GITHUB_TOKEN}",
         "Accept": "application/vnd.github.v3.raw"
     }
     
