@@ -33,61 +33,123 @@ async def agent_status():
 # Trong thực tế, KHÔNG hardcode ở đây mà nên để trong file biến môi trường (.env)
 WEBHOOK_SECRET = "12345678" 
 
-@router.post("/webhook/github")
+import hmac
+import hashlib
+import os
+import httpx # Dùng httpx thay cho requests vì FastAPI ưu tiên bất đồng bộ (async)
+from fastapi import FastAPI, Request, Header, HTTPException
+
+app = FastAPI()
+
+# --- LẤY BIẾN TỪ MÔI TRƯỜNG ---
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "mat_khau_bi_mat_cua_thien_123")
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "ghp_your_personal_access_token_here")
+
+
+# --- HÀM PHỤ: LẤY NỘI DUNG RAW CỦA FILE TỪ GITHUB ---
+async def fetch_file_content_from_github(repo_full_name: str, commit_id: str, file_path: str) -> str:
+    """Gọi API GitHub để lấy nội dung thô (raw) của một file tại một commit cụ thể."""
+    url = f"https://api.github.com/repos/{repo_full_name}/contents/{file_path}?ref={commit_id}"
+    headers = {
+        "Authorization": f"Bearer {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github.v3.raw" # Yêu cầu trả về nội dung raw thay vì JSON base64
+    }
+    
+    async with httpx.AsyncClient() as client:
+        response = await client.get(url, headers=headers)
+        
+    if response.status_code == 200:
+        return response.text
+    else:
+        print(f"Lỗi lấy file {file_path}: {response.status_code} - {response.text}")
+        return None
+
+
+# --- ROUTER CHÍNH ---
+@app.post("/webhook/github")
 async def github_webhook_handler(
     request: Request,
-    x_github_event: str = Header(None), # Bắt header xem loại sự kiện là gì
-    x_hub_signature_256: str = Header(None) # Bắt header chứa chữ ký bảo mật
+    x_github_event: str = Header(None),
+    x_hub_signature_256: str = Header(None)
 ):
     # ==========================================
-    # BƯỚC 1 & 2: NHẬN DỮ LIỆU & XÁC THỰC BẢO MẬT
+    # 1. BẢO MẬT & LỌC SỰ KIỆN (Giữ nguyên như cũ)
     # ==========================================
-    body = await request.body() # Đọc dữ liệu thô
+    body = await request.body()
     
     if not x_hub_signature_256:
-        raise HTTPException(status_code=401, detail="Bị từ chối: Thiếu chữ ký bảo mật")
+        raise HTTPException(status_code=401, detail="Thiếu chữ ký bảo mật")
 
-    # Tự tính toán lại chữ ký dựa trên Secret Key của mình
     expected_signature = "sha256=" + hmac.new(
         WEBHOOK_SECRET.encode("utf-8"), body, hashlib.sha256
     ).hexdigest()
 
-    # So sánh an toàn 2 chữ ký
     if not hmac.compare_digest(expected_signature, x_hub_signature_256):
-        raise HTTPException(status_code=403, detail="Bị từ chối: Chữ ký giả mạo!")
+        raise HTTPException(status_code=403, detail="Chữ ký giả mạo!")
 
-    # ==========================================
-    # BƯỚC 3: LỌC SỰ KIỆN
-    # ==========================================
     if x_github_event == "ping":
-        return {"status": "success", "message": "Pong! Webhook đã kết nối thành công với GitHub."}
+        return {"status": "success", "message": "Pong! Webhook OK."}
         
     if x_github_event != "push":
-        return {"status": "ignored", "message": f"Bỏ qua sự kiện {x_github_event}, chỉ xử lý push."}
+        return {"status": "ignored", "message": "Chỉ xử lý sự kiện push."}
 
     # ==========================================
-    # BƯỚC 4: TRÍCH XUẤT THÔNG TIN & XỬ LÝ
+    # 2. TRÍCH XUẤT METADATA TỪ WEBHOOK
     # ==========================================
-    payload = await request.json() # Chuyển dữ liệu thô thành dạng Dictionary
-    
+    payload = await request.json()
     commits = payload.get("commits", [])
+    
     if not commits:
-        return {"status": "ignored", "message": "Không có commit nào trong lần push này."}
+        return {"status": "ignored", "message": "Không có commit nào."}
 
-    # Lấy commit cuối cùng trong mảng
     latest_commit = commits[-1]
     commit_id = latest_commit["id"]
     repo_name = payload["repository"]["full_name"]
-    pusher_name = payload["pusher"]["name"]
+    committer_name = latest_commit["author"]["name"] # Lấy tên tác giả commit
+    timestamp = latest_commit["timestamp"] # Lấy thời gian thực của commit
 
-    print(f"🚀 {pusher_name} vừa push code lên {repo_name}!")
-    print(f"Commit ID: {commit_id}")
+    # ==========================================
+    # 3. TÌM FILE YAML BỊ THAY ĐỔI
+    # ==========================================
+    # Gộp danh sách các file được thêm mới (added) và sửa đổi (modified)
+    changed_files = latest_commit.get("added", []) + latest_commit.get("modified", [])
     
-    # Tại đây, bạn gọi hàm lấy diff API mà chúng ta đã làm ở ví dụ trước
-    # diff_code = get_commit_diff_from_github(repo_name, commit_id)
-    # print(diff_code)
+    # Lọc ra chỉ lấy các file có đuôi .yaml hoặc .yml
+    yaml_files = [f for f in changed_files if f.endswith('.yaml') or f.endswith('.yml')]
 
     # ==========================================
-    # BƯỚC 5: PHẢN HỒI CHO GITHUB
+    # 4. FETCH NỘI DUNG CODE & ĐÓNG GÓI DỮ LIỆU
     # ==========================================
-    return {"status": "success", "message": "Đã nhận và xử lý commit thành công!"}
+    files_content_data = [] # Mảng chứa thông tin từng file YAML
+
+    for file_path in yaml_files:
+        # Gọi hàm phụ để lấy nội dung code
+        raw_content = await fetch_file_content_from_github(repo_name, commit_id, file_path)
+        
+        if raw_content:
+            files_content_data.append({
+                "file_path": file_path,
+                "content": raw_content
+            })
+
+    # Cấu trúc JSON cuối cùng chuẩn bị cho Web App
+    response_data = {
+        "status": "Success",
+        "metadata": {
+            "committer_name": committer_name,
+            "timestamp": timestamp,
+            "commit_id": commit_id,
+            "repo_name": repo_name,
+            "commit_message": latest_commit["message"]
+        },
+        "yaml_changes": files_content_data # Chứa mảng các file và ruột code bên trong
+    }
+
+    # Tại đây, bạn có thể lưu `response_data` vào Database 
+    # HOẶC bắn sự kiện qua Pusher/Supabase để đẩy ra Frontend cho ứng dụng web
+
+    print("--- DỮ LIỆU SẼ GỬI CHO WEB APP ---")
+    print(response_data)
+
+    # Trả về cho GitHub
+    return {"status": "success", "data": response_data}
