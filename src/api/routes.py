@@ -162,4 +162,7 @@ async def github_webhook_handler(
         "debug_errors": errors # Xuất mảng lỗi này ra kết quả trả về
     }
 
+
+    sql.save(re)
+
     return {"status": "success", "data": response_data}

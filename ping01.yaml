@@ -1,2 +1,122 @@
-user: nthoc
-role: ai
+specVersion: vsf-idp.io/v2
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MỨC 3 — PHỨC TẠP
+# BFF/gateway cho luồng checkout, orchestrate nhiều service downstream.
+# Đặc điểm nâng cao so với 2 file trước:
+#   • Nhiều dependency (17 dòng topology), fan-out rộng.
+#   • Trộn nhiều protocol: REST, gRPC, GraphQL, Kafka, WebSocket.
+#   • Transactional outbox pattern: publish 1 topic nội bộ để chính consumer
+#     của mình xử lý bất đồng bộ (xem cụm INTERNAL bên dưới).
+#   • Cross-namespace: gọi service ở nhiều namespace/domain khác nhau.
+#   • Owner có đủ 3 vai trò, nhiều techlead (hệ thống trọng yếu, nhiều người
+#     cùng chịu trách nhiệm kiến trúc).
+#   • Read replica + primary tách riêng cho datastore.
+# Dùng file này để test giao diện dependency graph khi node bậc cao có nhiều cạnh.
+# ─────────────────────────────────────────────────────────────────────────────
+
+metadata:
+  domain: Commerce & Checkout
+  system: commerce-core
+  namespace: checkout
+
+spec:
+  type: gateway
+  id: checkout-gateway
+  name: Checkout Gateway (BFF)
+  description: >-
+    Backend-for-Frontend điều phối toàn bộ luồng thanh toán: dựng giỏ hàng, áp
+    khuyến mãi, kiểm tra tồn kho, gọi thanh toán, chống gian lận, và trả kết quả
+    realtime cho client qua WebSocket. Là điểm vào trọng yếu, mọi lỗi ở đây ảnh
+    hưởng trực tiếp tới doanh thu.
+
+  owners:
+    members:
+      - user: v.quangnh1@vinsmartfuture.tech
+        role: techlead
+      - user: v.maiptt7@vinsmartfuture.tech
+        role: techlead
+      - user: v.tuanla5@vinsmartfuture.tech
+        role: maintainer
+      - user: v.dungvt22@vinsmartfuture.tech
+        role: maintainer
+      - user: v.khanhtn8@vinsmartfuture.tech
+        role: member
+
+  review:
+    branch: "main"
+
+  topology:
+    # ── Membership ────────────────────────────────────────────────────────────
+    - ref: system:commerce/commerce-core
+      reason: Component này là một phần của system commerce-core
+
+    # ── API mình expose ───────────────────────────────────────────────────────
+    - ref: providesApis:checkout/checkout-gateway
+      protocol: REST
+      reason: OpenAPI spec của chính gateway — expose /checkout/session, /checkout/confirm
+
+    # ── API mình gọi vào (fan-out nhiều service, nhiều protocol) ──────────────
+    - ref: consumesApis:cart/cart-service
+      protocol: REST
+      reason: Lấy nội dung giỏ hàng hiện tại của phiên checkout
+
+    - ref: consumesApis:inventory/inventory-service
+      protocol: gRPC
+      reason: Kiểm tra và giữ tồn kho realtime trước khi cho thanh toán
+
+    - ref: consumesApis:pricing/promotion-service
+      protocol: gRPC
+      reason: Tính giá cuối sau khi áp voucher, khuyến mãi, điểm loyalty
+
+    - ref: consumesApis:payment/payment-service
+      protocol: REST
+      reason: Khởi tạo và thực hiện giao dịch thanh toán cho đơn hàng
+
+    - ref: consumesApis:risk/fraud-detection-service
+      protocol: gRPC
+      reason: Chấm điểm rủi ro giao dịch trước khi xác nhận thanh toán
+
+    - ref: consumesApis:catalog/product-graph
+      protocol: GraphQL
+      reason: Truy vấn thông tin sản phẩm (tên, ảnh, thuộc tính) để dựng màn xác nhận
+
+    # ── Hạ tầng (primary + replica tách riêng, cache, broker) ─────────────────
+    - ref: resource:checkout/checkout-postgres-primary
+      reason: Lưu trạng thái phiên checkout (session), ghi đơn hàng tạm
+
+    - ref: resource:checkout/checkout-postgres-replica
+      reason: Read replica phục vụ truy vấn trạng thái session, giảm tải primary
+
+    - ref: resource:checkout/checkout-redis
+      reason: Cache session token, idempotency key, khoá phân tán khi giữ tồn kho
+
+    - ref: resource:platform/kafka
+      reason: Message broker dùng chung cho mọi topic publish/subscribe bên dưới
+
+    # ── Kafka: mình publish ra ngoài (downstream consumer nghe) ───────────────
+    - ref: publishesTo:checkout/checkout.order-placed
+      protocol: Kafka
+      reason: Phát sự kiện đơn hàng đã đặt thành công cho fulfillment, analytics
+
+    - ref: publishesTo:audit/audit.transaction-log
+      protocol: Kafka
+      reason: Ghi log audit mọi giao dịch (bắt buộc theo Thông tư 50/2024/TT-NHNN, Điều 18)
+
+    # ── Kafka: mình subscribe ─────────────────────────────────────────────────
+    - ref: consumesFrom:payment/payment.status-changed
+      protocol: Kafka
+      reason: Nhận cập nhật trạng thái thanh toán bất đồng bộ để đẩy về client
+
+    # ── Realtime tới client ───────────────────────────────────────────────────
+    - ref: providesApis:checkout/checkout-realtime
+      protocol: WebSocket
+      reason: Kênh WebSocket đẩy tiến độ checkout realtime về mobile/web app
+
+    # ── INTERNAL: transactional outbox ────────────────────────────────────────
+    # Gateway ghi lệnh vào bảng outbox rồi publish topic nội bộ này; chính
+    # checkout-consumer (component riêng cùng namespace) nghe và thực thi bất
+    # đồng bộ. Tách khỏi các topic "ngoài" ở trên vì đây là chi tiết nội bộ.
+    - ref: publishesTo:checkout/checkout.outbox-dispatch
+      protocol: Kafka
+      reason: Internal outbox dispatch — trigger checkout-consumer xử lý side-effect bất đồng bộ
