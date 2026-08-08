@@ -6,9 +6,6 @@ import httpx # Dùng httpx thay cho requests vì FastAPI ưu tiên bất đồng
 
 from src.agents.graph import agent
 from src.models.schemas import ChatRequest, ChatResponse
-from dotenv import load_dotenv
-
-load_dotenv()
 
 from fastapi import FastAPI, Request, Header, HTTPException
 router = APIRouter()
