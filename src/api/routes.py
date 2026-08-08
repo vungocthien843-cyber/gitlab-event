@@ -6,6 +6,9 @@ import httpx # Dùng httpx thay cho requests vì FastAPI ưu tiên bất đồng
 
 from src.agents.graph import agent
 from src.models.schemas import ChatRequest, ChatResponse
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from fastapi import FastAPI, Request, Header, HTTPException
 router = APIRouter()
@@ -34,7 +37,9 @@ async def agent_status():
 
 # Mật khẩu này bạn tự bịa ra, sau đó copy dán vào phần "Secret" khi tạo Webhook trên GitHub
 # Trong thực tế, KHÔNG hardcode ở đây mà nên để trong file biến môi trường (.env)
-WEBHOOK_SECRET = "12345678" 
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
+
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
 # --- HÀM PHỤ: LẤY NỘI DUNG RAW CỦA FILE TỪ GITHUB ---
 async def fetch_file_content_from_github(repo_full_name: str, commit_id: str, file_path: str) -> str:
