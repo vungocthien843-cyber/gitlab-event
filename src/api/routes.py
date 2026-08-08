@@ -1,16 +1,22 @@
-from fastapi import APIRouter, HTTPException
+import os
 import hmac
 import hashlib
-import os
 import httpx # Dùng httpx thay cho requests vì FastAPI ưu tiên bất đồng bộ (async)
+from dotenv import load_dotenv # Quan trọng: Để đọc biến từ file .env khi test local
+
+from fastapi import APIRouter, Request, Header, HTTPException
 
 from src.agents.graph import agent
 from src.models.schemas import ChatRequest, ChatResponse
 
-from fastapi import FastAPI, Request, Header, HTTPException
+# Tải các biến môi trường từ file .env vào hệ thống
+load_dotenv()
+
 router = APIRouter()
 
-
+# ==========================================
+# CÁC ROUTER CŨ CỦA BẠN (GIỮ NGUYÊN)
+# ==========================================
 @router.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest) -> ChatResponse:
     """Chat với AI agent."""
@@ -23,28 +29,30 @@ async def chat(request: ChatRequest) -> ChatResponse:
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
 @router.get("/status")
 async def agent_status():
     """Kiểm tra trạng thái agent."""
     return {"status": "ready", "agent": "LangGraph Agent v1.0"}
 
 
-
-
-# Mật khẩu này bạn tự bịa ra, sau đó copy dán vào phần "Secret" khi tạo Webhook trên GitHub
-# Trong thực tế, KHÔNG hardcode ở đây mà nên để trong file biến môi trường (.env)
+# ==========================================
+# CẤU HÌNH WEBHOOK (Lấy từ biến môi trường)
+# ==========================================
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
-
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
 # --- HÀM PHỤ: LẤY NỘI DUNG RAW CỦA FILE TỪ GITHUB ---
 async def fetch_file_content_from_github(repo_full_name: str, commit_id: str, file_path: str) -> str:
     """Gọi API GitHub để lấy nội dung thô (raw) của một file tại một commit cụ thể."""
+    # Nếu không có token, báo lỗi ngay lập tức
+    if not GITHUB_TOKEN:
+        print("LỖI: Chưa cấu hình GITHUB_TOKEN")
+        return None
+
     url = f"https://api.github.com/repos/{repo_full_name}/contents/{file_path}?ref={commit_id}"
     headers = {
         "Authorization": f"Bearer {GITHUB_TOKEN}",
-        "Accept": "application/vnd.github.v3.raw" # Yêu cầu trả về nội dung raw thay vì JSON base64
+        "Accept": "application/vnd.github.v3.raw"
     }
     
     async with httpx.AsyncClient() as client:
@@ -56,19 +64,24 @@ async def fetch_file_content_from_github(repo_full_name: str, commit_id: str, fi
         print(f"Lỗi lấy file {file_path}: {response.status_code} - {response.text}")
         return None
 
-
-# --- ROUTER CHÍNH ---
+# ==========================================
+# ROUTER CHÍNH: XỬ LÝ SỰ KIỆN GITHUB WEBHOOK
+# ==========================================
 @router.post("/webhook/github")
 async def github_webhook_handler(
     request: Request,
     x_github_event: str = Header(None),
     x_hub_signature_256: str = Header(None)
 ):
-    # ==========================================
-    # 1. BẢO MẬT & LỌC SỰ KIỆN (Giữ nguyên như cũ)
-    # ==========================================
+    # ------------------------------------------
+    # 1. BẢO MẬT & LỌC SỰ KIỆN
+    # ------------------------------------------
     body = await request.body()
     
+    # Kiểm tra xem có cấu hình Secret chưa (để tránh lỗi 'NoneType' has no attribute 'encode')
+    if not WEBHOOK_SECRET:
+        raise HTTPException(status_code=500, detail="Lỗi Server: Chưa cấu hình WEBHOOK_SECRET")
+
     if not x_hub_signature_256:
         raise HTTPException(status_code=401, detail="Thiếu chữ ký bảo mật")
 
@@ -85,37 +98,43 @@ async def github_webhook_handler(
     if x_github_event != "push":
         return {"status": "ignored", "message": "Chỉ xử lý sự kiện push."}
 
-    # ==========================================
+    # ------------------------------------------
     # 2. TRÍCH XUẤT METADATA TỪ WEBHOOK
-    # ==========================================
+    # ------------------------------------------
     payload = await request.json()
     commits = payload.get("commits", [])
     
     if not commits:
         return {"status": "ignored", "message": "Không có commit nào."}
 
+    # Lấy thông tin từ commit cuối cùng (đại diện cho lần push này)
     latest_commit = commits[-1]
     commit_id = latest_commit["id"]
     repo_name = payload["repository"]["full_name"]
-    committer_name = latest_commit["author"]["name"] # Lấy tên tác giả commit
-    timestamp = latest_commit["timestamp"] # Lấy thời gian thực của commit
+    committer_name = latest_commit["author"]["name"] 
+    timestamp = latest_commit["timestamp"] 
 
-    # ==========================================
-    # 3. TÌM FILE YAML BỊ THAY ĐỔI
-    # ==========================================
-    # Gộp danh sách các file được thêm mới (added) và sửa đổi (modified)
-    changed_files = latest_commit.get("added", []) + latest_commit.get("modified", [])
+    # ------------------------------------------
+    # 3. TÌM FILE YAML BỊ THAY ĐỔI (ĐÃ SỬA LỖI MẢNG RỖNG)
+    # ------------------------------------------
+    changed_files = set() # Dùng tập hợp (set) để tránh trùng lặp file
+    
+    # Quét TẤT CẢ các commit trong lần push này để gom file, không chỉ quét 1 commit cuối nữa
+    for commit in commits:
+        for file in commit.get("added", []):
+            changed_files.add(file)
+        for file in commit.get("modified", []):
+            changed_files.add(file)
     
     # Lọc ra chỉ lấy các file có đuôi .yaml hoặc .yml
     yaml_files = [f for f in changed_files if f.endswith('.yaml') or f.endswith('.yml')]
 
-    # ==========================================
+    # ------------------------------------------
     # 4. FETCH NỘI DUNG CODE & ĐÓNG GÓI DỮ LIỆU
-    # ==========================================
-    files_content_data = [] # Mảng chứa thông tin từng file YAML
+    # ------------------------------------------
+    files_content_data = [] 
 
     for file_path in yaml_files:
-        # Gọi hàm phụ để lấy nội dung code
         raw_content = await fetch_file_content_from_github(repo_name, commit_id, file_path)
         
         if raw_content:
@@ -124,7 +143,7 @@ async def github_webhook_handler(
                 "content": raw_content
             })
 
-    # Cấu trúc JSON cuối cùng chuẩn bị cho Web App
+    # Cấu trúc JSON cuối cùng
     response_data = {
         "status": "Success",
         "metadata": {
@@ -134,14 +153,10 @@ async def github_webhook_handler(
             "repo_name": repo_name,
             "commit_message": latest_commit["message"]
         },
-        "yaml_changes": files_content_data # Chứa mảng các file và ruột code bên trong
+        "yaml_changes": files_content_data 
     }
 
-    # Tại đây, bạn có thể lưu `response_data` vào Database 
-    # HOẶC bắn sự kiện qua Pusher/Supabase để đẩy ra Frontend cho ứng dụng web
-
-    print("--- DỮ LIỆU SẼ GỬI CHO WEB APP ---")
+    print("--- DỮ LIỆU ĐÃ XỬ LÝ THÀNH CÔNG ---")
     print(response_data)
 
-    # Trả về cho GitHub
     return {"status": "success", "data": response_data}
