@@ -71,7 +71,7 @@ async def upload_catalog(file: UploadFile = File(...)) -> ApiResponse:
 def list_catalogs(
     q: str | None = Query(
         default=None,
-        description="Tìm theo tên file (khớp chuỗi con, không phân biệt hoa thường). "
+        description="Tìm theo tên file. "
         "Bỏ trống để lấy toàn bộ danh sách.",
         examples=["order"],
     ),
@@ -80,10 +80,7 @@ def list_catalogs(
     ),
 ) -> ApiResponse:
     """Phục vụ cả hai cách chọn file ở màn hình xoá:
-
-    - `GET /catalogs`            -> toàn bộ danh sách, đổ vào dropdown "Chọn file"
-    - `GET /catalogs?q=order`    -> kết quả tìm kiếm theo tên
-
+    Bỏ trống để lấy toàn bộ list file
     Dữ liệu nằm ở `details.items`, kèm `details.total` để hiện "x/y file".
     """
     return ingest.list_catalogs(
@@ -100,7 +97,7 @@ def list_catalogs(
     responses={422: {"description": "Không tìm thấy file; details.suggestions gợi ý tên gần đúng"}},
 )
 def delete_catalog(filename: str, response: Response) -> ApiResponse:
-    """Xoá cả dòng trong bảng `input_json` lẫn bản ghi trong cache.
+    """Xoá cả data trong bảng `input_json` lẫn bản ghi trong cache.
 
     Trả 200 kèm body thay vì 204 rỗng: contract chung yêu cầu mọi response đều
     đọc được `status`/`message`/`can_continue`. 204 theo đúng chuẩn REST hơn
