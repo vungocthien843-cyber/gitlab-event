@@ -22,7 +22,8 @@ import logging
 import os
 import threading
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from typing import Any
 
 from app.models.schemas import CatalogSummary
@@ -72,7 +73,7 @@ class StoredCatalog:
     # None với bản nạp lại từ DB: kích thước file YAML gốc không phải nội dung
     # của JSON nên không lưu trong `content`, và bịa ra một con số còn tệ hơn.
     size_bytes: int | None = None
-    uploaded_at: datetime | None = field(default_factory=lambda: datetime.now(UTC))
+    uploaded_at: datetime | None = field(default_factory=lambda: datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")))
 
     @property
     def filename(self) -> str:

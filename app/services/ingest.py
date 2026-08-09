@@ -19,7 +19,8 @@ from __future__ import annotations
 
 import difflib
 import logging
-from datetime import UTC, datetime
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from typing import Any
 
 from app.core.errors import (
@@ -141,7 +142,7 @@ def _build_graph_document(parsed: ParsedFile) -> dict[str, Any]:
     nhờ nó mà lúc nạp lại từ DB vẫn biết được catalog này nạp lúc nào.
     """
     document = merge_documents([parsed])
-    document["generatedAt"] = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    document["generatedAt"] = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).strftime("%Y-%m-%dT%H:%M:%S+07:00")
     return document
 
 

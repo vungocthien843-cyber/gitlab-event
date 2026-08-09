@@ -22,7 +22,8 @@ import json
 import re
 import sys
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Any
 
@@ -594,7 +595,7 @@ def build_document(yaml_text: str, filename: str,
         "specVersion": SPEC_VERSION,
     }
     if timestamp:
-        out["generatedAt"] = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        out["generatedAt"] = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).strftime("%Y-%m-%dT%H:%M:%S+07:00")
 
     out["scope"] = {
         "kind": "single",
