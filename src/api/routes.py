@@ -14,9 +14,6 @@ load_dotenv()
 
 router = APIRouter()
 
-# ==========================================
-# CÁC ROUTER CŨ CỦA BẠN (GIỮ NGUYÊN)
-# ==========================================
 @router.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest) -> ChatResponse:
     """Chat với AI agent."""
@@ -59,10 +56,10 @@ async def fetch_file_content_from_github(repo_full_name: str, commit_id: str, fi
     else:
         # IN ĐẬM LỖI RA VERCEL ĐỂ BẮT BỆNH
         print(f"=====================================")
-        print(f"🔥 LỖI LẤY FILE: {file_path}")
-        print(f"🔥 TRẠNG THÁI: {response.status_code}")
-        print(f"🔥 CHI TIẾT LỖI TỪ GITHUB: {response.text}")
-        print(f"🔥 URL ĐÃ GỌI: {url}")
+        print(f" LỖI LẤY FILE: {file_path}")
+        print(f" TRẠNG THÁI: {response.status_code}")
+        print(f" CHI TIẾT LỖI TỪ GITHUB: {response.text}")
+        print(f" URL ĐÃ GỌI: {url}")
         print(f"=====================================")
         return None
 

@@ -8,16 +8,41 @@ trong code validate. Muốn siết/nới một luật thì sửa đúng một ch
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 # Gốc dự án (thư mục chứa app/, data/, requirements.txt, ...), suy ra từ vị trí
 # file này thay vì dùng đường dẫn tương đối "./..." — tránh phụ thuộc vào cwd
 # lúc chạy uvicorn (chạy từ đâu cũng ra đúng thư mục).
 BASE_DIR = Path(__file__).resolve().parents[2]
 
-# Thư mục output: nơi ghi các file JSON đã convert, tự tạo nếu chưa tồn tại
-OUTPUT_DIR = str(BASE_DIR / "output_json")
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+# Nạp .env ở gốc dự án. `override=False` để biến môi trường thật (docker-compose
+# env_file, CI secret) luôn thắng file .env trên máy lập trình viên.
+load_dotenv(BASE_DIR / ".env", override=False)
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Database — nơi lưu graph JSON (thay cho thư mục output_json/ trước đây)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Không có giá trị mặc định trỏ vào một DB nào đó: thiếu biến này thì phải hỏng
+# ngay lúc khởi động với thông báo rõ ràng, chứ không phải âm thầm ghi vào chỗ
+# không ai ngờ tới rồi vài ngày sau mới phát hiện dữ liệu nằm sai nơi.
+DATABASE_URL = os.getenv("DATABASE_URL", "")
+
+# Schema chứa bảng `input_json`. Để trống thì suy từ `options=-csearch_path%3D...`
+# trong DATABASE_URL (xem core/db.py); đặt biến này chỉ khi muốn ghi đè URL.
+DB_SCHEMA = os.getenv("DB_SCHEMA", "")
+DB_SCHEMA_FALLBACK = "ai20k_db"
+
+# Bật để in mọi câu SQL ra log — chỉ dùng khi debug, rất ồn.
+DB_ECHO = os.getenv("DB_ECHO", "").lower() in ("1", "true", "yes")
+
+# Neon đóng connection nhàn rỗi. `pool_pre_ping` cho SQLAlchemy ping trước khi
+# giao connection cho request, nếu chết thì lặng lẽ mở lại — không có nó thì
+# request đầu tiên sau một lúc rảnh sẽ ăn OperationalError.
+DB_POOL_RECYCLE_SECONDS = 300
+DB_CONNECT_TIMEOUT_SECONDS = 10
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Layer 1 — giới hạn cơ bản của file upload

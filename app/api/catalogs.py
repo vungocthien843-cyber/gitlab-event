@@ -43,11 +43,11 @@ router = APIRouter(prefix="/catalogs", tags=["Catalogs"])
     },
 )
 async def upload_catalog(file: UploadFile = File(...)) -> ApiResponse:
-    """Nhận file, chạy 5 tầng validate, sinh graph JSON và ghi vào output_json/.
+    """Nhận file, chạy 5 tầng validate, sinh graph JSON và lưu vào bảng `input_json`.
 
     Chỉ file qua được TOÀN BỘ validate mới được lưu. Bản cũ ghi file JSON ngay
-    cả khi parse còn lỗi — nghĩa là thư mục output tích luỹ dữ liệu hỏng mà
-    không ai biết. Giờ thì lỗi ở tầng nào cũng dừng trước khi chạm vào đĩa.
+    cả khi parse còn lỗi — nghĩa là kho output tích luỹ dữ liệu hỏng mà không ai
+    biết. Giờ thì lỗi ở tầng nào cũng dừng trước khi chạm vào database.
     """
     try:
         content = await read_upload_within_limit(file)
@@ -101,7 +101,7 @@ def list_catalogs(
     responses={422: {"description": "Không tìm thấy file; details.suggestions gợi ý tên gần đúng"}},
 )
 def delete_catalog(filename: str, response: Response) -> ApiResponse:
-    """Xoá cả bản ghi trong chỉ mục lẫn file JSON đã sinh.
+    """Xoá cả dòng trong bảng `input_json` lẫn bản ghi trong cache.
 
     Trả 200 kèm body thay vì 204 rỗng: contract chung yêu cầu mọi response đều
     đọc được `status`/`message`/`can_continue`. 204 theo đúng chuẩn REST hơn

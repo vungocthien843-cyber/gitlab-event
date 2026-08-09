@@ -78,7 +78,7 @@ class CatalogSummary(BaseModel):
     """Tóm tắt 1 catalog đã nạp — phần tử của `details.items` ở GET /catalogs.
 
     Dựng để frontend render bảng mà không cần gọi thêm API nào: đã có sẵn tình
-    trạng, số liệu đồ thị, thời điểm nạp và đường dẫn file JSON sinh ra.
+    trạng, số liệu đồ thị, thời điểm nạp và mã bản ghi trong database.
     """
 
     file: str
@@ -88,9 +88,22 @@ class CatalogSummary(BaseModel):
     warning_count: int
     node_count: int
     edge_count: int
-    size_bytes: int
-    uploaded_at: datetime
-    output_file: str | None = Field(description="Tên file JSON đã sinh trong output_json/")
+    # Hai field dưới nullable vì chúng KHÔNG nằm trong JSON lưu ở database.
+    # Item vừa upload trong phiên hiện tại thì có giá trị; item nạp lại từ DB sau
+    # khi restart thì `size_bytes` là null (kích thước file YAML gốc không được
+    # lưu — bịa ra một con số còn tệ hơn là để trống).
+    size_bytes: int | None = Field(
+        default=None, description="Kích thước file YAML gốc; null nếu nạp lại từ DB"
+    )
+    uploaded_at: datetime | None = Field(
+        default=None, description="Thời điểm nạp; lấy từ `generatedAt` trong JSON"
+    )
+    output_file: str | None = Field(
+        description="Tên logic của tài liệu JSON, vd 'order-service.json'"
+    )
+    record_id: int | None = Field(
+        default=None, description="Khoá chính của dòng trong bảng input_json"
+    )
     diagnostics: dict[str, Any] | None = Field(
         default=None, description="Chi tiết đầy đủ; chỉ có khi ?include=diagnostics"
     )

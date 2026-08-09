@@ -1,42 +1,40 @@
 """
 ingest.py — Điều phối luồng nạp một catalog, sau khi input đã sạch.
 
-    validate (5 tầng)  ->  kiểm tra xung đột xuyên file  ->  ghi JSON  ->  lưu chỉ mục
-                                                                       ->  dựng response
+    validate (5 tầng)  ->  kiểm tra xung đột xuyên file  ->  lưu DB  ->  cập nhật cache
+                                                                     ->  dựng response
 
 Đây là tầng DUY NHẤT biết thứ tự các bước. Controller không biết, validator
-không biết. Muốn chèn thêm một bước (lưu DB, gọi LLM, bắn event) thì thêm đúng
-ở đây, và nó tự nằm trong đúng nhánh xử lý lỗi.
+không biết. Muốn chèn thêm một bước (gọi LLM, bắn event) thì thêm đúng ở đây,
+và nó tự nằm trong đúng nhánh xử lý lỗi.
 
 Vì sao KHÔNG bọc cả luồng trong một try/except khổng lồ: một `except Exception`
-duy nhất ôm cả validate lẫn ghi đĩa thì không còn phân biệt được "người dùng gửi
-file sai" (422, tự sửa được) với "đĩa đầy" (500, gọi support). Mỗi bước bắt đúng
-loại lỗi mình hiểu, phần còn lại để rơi lên handler toàn cục thành critical.
+duy nhất ôm cả validate lẫn ghi DB thì không còn phân biệt được "người dùng gửi
+file sai" (422, tự sửa được) với "database không tới được" (500, gọi support).
+Mỗi bước bắt đúng loại lỗi mình hiểu, phần còn lại để rơi lên handler toàn cục
+thành critical.
 """
 
 from __future__ import annotations
 
 import difflib
-import json
 import logging
-import os
-from pathlib import Path
+from datetime import UTC, datetime
 from typing import Any
 
-from app.core.config import OUTPUT_DIR
 from app.core.errors import (
     CriticalError,
     ErrorCode,
     HumanReviewRequiredError,
-    SecurityError,
     Stage,
     ValidationError,
 )
 from app.models import schemas
 from app.models.schemas import ApiResponse, Issue
+from app.services import catalog_repository
 from app.services.catalog_merge import merge_documents
 from app.services.catalog_to_graph import ParsedFile
-from app.services.store import StoredCatalog, store
+from app.services.store import StoredCatalog, output_name, store
 from app.services.validation import run_validation_pipeline
 
 logger = logging.getLogger(__name__)
@@ -69,21 +67,25 @@ def ingest_catalog(
     # ── Bước 2: xung đột với các file đã nạp trước đó ────────────────────────
     _check_cross_file_conflicts(parsed, validated.filename)
 
-    # ── Bước 3: ghi JSON ra đĩa ──────────────────────────────────────────────
-    output_file = _write_graph_json(parsed)
+    # ── Bước 3: lưu JSON vào database ────────────────────────────────────────
+    record_id, replaced = _save_graph_document(parsed)
+    output_file = output_name(parsed.filename)
 
-    # ── Bước 4: cập nhật chỉ mục ─────────────────────────────────────────────
-    replaced = store.put(
+    # ── Bước 4: cập nhật cache ───────────────────────────────────────────────
+    # Sau DB, không phải trước: DB hỏng thì cache phải giữ nguyên trạng thái cũ,
+    # nếu không hệ thống sẽ báo "đã nạp" một file chưa hề được lưu ở đâu cả.
+    store.put(
         StoredCatalog(
             parsed=parsed,
             size_bytes=validated.size_bytes,
             fingerprint=validated.fingerprint,
             output_file=output_file,
+            record_id=record_id,
         )
     )
 
     # ── Bước 5: dựng response ────────────────────────────────────────────────
-    return _build_ingest_response(validated, output_file, replaced, request_id)
+    return _build_ingest_response(validated, output_file, record_id, replaced, request_id)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -130,83 +132,64 @@ def _check_cross_file_conflicts(parsed: ParsedFile, filename: str) -> None:
     )
 
 
-def _output_name(filename: str) -> str:
-    """'order-service.catalog.yaml' -> 'order-service.json'"""
-    stem = os.path.splitext(filename)[0]
-    if stem.endswith(".catalog"):
-        stem = stem[: -len(".catalog")]
-    return f"{stem}.json"
+def _build_graph_document(parsed: ParsedFile) -> dict[str, Any]:
+    """Dựng đúng nội dung JSON sẽ nằm trong cột `content`.
 
-
-def _resolve_output_path(filename: str) -> Path:
-    """Dựng đường dẫn output và KHẲNG ĐỊNH nó nằm trong OUTPUT_DIR.
-
-    Layer 2 đã chặn path traversal ở tên file. Chốt chặn thứ hai này tồn tại vì
-    hàm `_write_graph_json` có thể bị gọi từ chỗ khác trong tương lai — an toàn
-    không nên phụ thuộc vào việc người gọi có nhớ validate hay không.
+    Giống hệt thứ trước đây ghi ra `output_json/*.json`, cộng thêm `generatedAt`
+    — trường mà `build_document` của CLI vẫn sinh ra cho file JSON. Nó không phải
+    metadata gắn thêm cho database: đó là một phần của định dạng tài liệu, và
+    nhờ nó mà lúc nạp lại từ DB vẫn biết được catalog này nạp lúc nào.
     """
-    base = Path(OUTPUT_DIR).resolve()
-    target = (base / _output_name(filename)).resolve()
-    if not target.is_relative_to(base):
-        raise SecurityError(
-            ErrorCode.UNSAFE_FILENAME,
-            "Tên file không hợp lệ.",
-            stage=Stage.PERSIST,
-            log_message=f"Đường dẫn output thoát khỏi OUTPUT_DIR: {target}",
-        )
-    return target
+    document = merge_documents([parsed])
+    document["generatedAt"] = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return document
 
 
-def _write_graph_json(parsed: ParsedFile) -> str:
-    """Ghi file JSON theo kiểu 'ghi tạm rồi đổi tên'.
+def _save_graph_document(parsed: ParsedFile) -> tuple[int, bool]:
+    """Sinh graph JSON và lưu vào bảng `input_json`. Trả `(id, đã_ghi_đè)`.
 
-    `os.replace` là thao tác nguyên tử trên cùng một filesystem: hoặc file cũ
-    còn nguyên, hoặc file mới đã đủ. Không bao giờ có trạng thái giữa chừng —
-    tiến trình chết lúc đang ghi cũng không để lại file JSON cụt.
+    Không còn file tạm và `os.replace` như bản ghi đĩa: một câu UPDATE/INSERT của
+    Postgres đã là nguyên tử sẵn, hoặc dòng cũ còn nguyên hoặc dòng mới đã đủ.
+    Không bao giờ có tài liệu JSON cụt trong bảng.
     """
-    target = _resolve_output_path(parsed.filename)
-    tmp = target.with_name(target.name + ".tmp")
-
     try:
-        graph = merge_documents([parsed])
-        target.parent.mkdir(parents=True, exist_ok=True)
-        with tmp.open("w", encoding="utf-8", newline="\n") as f:
-            json.dump(graph, f, ensure_ascii=False, indent=2)
-            f.write("\n")
-        os.replace(tmp, target)
+        document = _build_graph_document(parsed)
     except OSError as exc:
-        _cleanup(tmp)
+        # Hiếm, nhưng `merge_documents` có thể chạm tài nguyên hệ thống. Giữ
+        # nhánh này để lỗi hạ tầng không bị gán nhầm thành lỗi logic.
         raise CriticalError(
             ErrorCode.STORAGE_FAILURE,
             "Không lưu được kết quả xử lý. Vui lòng thử lại sau.",
             stage=Stage.PERSIST,
-            log_message=f"Ghi '{target}' thất bại: {type(exc).__name__}: {exc}",
+            log_message=f"Dựng tài liệu cho '{parsed.filename}' thất bại: "
+            f"{type(exc).__name__}",
         ) from exc
     except Exception as exc:
-        # Lỗi lạ khi serialize (kiểu dữ liệu không JSON hoá được...). Không đoán,
-        # không đi tiếp — dọn file tạm rồi báo critical.
-        _cleanup(tmp)
+        # Lỗi lạ khi merge/serialize. Không đoán, không đi tiếp.
         raise CriticalError(
             ErrorCode.INTERNAL_ERROR,
             "Không lưu được kết quả xử lý.",
             stage=Stage.PERSIST,
-            log_message=f"Lỗi ngoài dự kiến khi ghi '{target}': {type(exc).__name__}",
+            log_message=f"Lỗi ngoài dự kiến khi dựng JSON cho "
+            f"'{parsed.filename}': {type(exc).__name__}",
         ) from exc
 
-    logger.info("Đã ghi %s", target.name)
-    return target.name
+    # `save` tự bọc lỗi SQLAlchemy thành CriticalError/STORAGE_FAILURE.
+    record_id, replaced = catalog_repository.save(document)
 
-
-def _cleanup(path: Path) -> None:
-    """Xoá file tạm. Thất bại ở đây không được che lỗi gốc nên chỉ ghi log."""
-    try:
-        path.unlink(missing_ok=True)
-    except OSError as exc:
-        logger.warning("Không xoá được file tạm %s: %s", path, exc)
+    logger.info(
+        "Đã lưu '%s' vào input_json: id=%d, ghi_đè=%s",
+        parsed.filename, record_id, replaced,
+    )
+    return record_id, replaced
 
 
 def _build_ingest_response(
-    validated: Any, output_file: str, replaced: bool, request_id: str
+    validated: Any,
+    output_file: str,
+    record_id: int,
+    replaced: bool,
+    request_id: str,
 ) -> ApiResponse:
     """Sạch hoàn toàn -> success. Có cảnh báo hoặc có ghi đè -> warning."""
     parsed = validated.parsed
@@ -217,6 +200,7 @@ def _build_ingest_response(
         "edge_count": len(parsed.edges),
         "size_bytes": validated.size_bytes,
         "output_file": output_file,
+        "record_id": record_id,
         "warning_count": len(validated.warnings),
         "replaced_existing": replaced,
     }
@@ -305,12 +289,12 @@ def _suggest_filenames(wanted: str, limit: int = 5) -> list[str]:
 
 
 def delete_catalog(filename: str, request_id: str) -> ApiResponse:
-    """Xoá 1 catalog: xoá file JSON trước, xoá chỉ mục sau.
+    """Xoá 1 catalog: xoá dòng trong DB trước, xoá cache sau.
 
-    Thứ tự này là cố ý. Nếu xoá chỉ mục trước rồi xoá file thất bại, ta còn lại
-    một file JSON mồ côi trên đĩa mà không API nào nhìn thấy. Làm ngược lại:
-    xoá file hỏng thì dừng luôn, chỉ mục còn nguyên, hệ thống vẫn nhất quán và
-    người dùng thử lại được.
+    Thứ tự này là cố ý. Nếu xoá cache trước rồi xoá DB thất bại, ta còn lại một
+    dòng mồ côi trong bảng mà không API nào nhìn thấy — cho tới lần restart sau,
+    lúc nó bất ngờ sống lại. Làm ngược lại: DB xoá hỏng thì dừng luôn, cache còn
+    nguyên, hệ thống vẫn nhất quán và người dùng thử lại được.
     """
     item = store.get(filename)
     if item is None:
@@ -321,16 +305,9 @@ def delete_catalog(filename: str, request_id: str) -> ApiResponse:
             details={"suggestions": _suggest_filenames(filename)},
         )
 
-    if item.output_file:
-        try:
-            _resolve_output_path(filename).unlink(missing_ok=True)
-        except OSError as exc:
-            raise CriticalError(
-                ErrorCode.STORAGE_FAILURE,
-                "Không xoá được file kết quả. Chưa xoá gì cả, vui lòng thử lại.",
-                stage=Stage.PERSIST,
-                log_message=f"Xoá output của '{filename}' thất bại: {exc}",
-            ) from exc
+    # Lỗi SQLAlchemy đã được repository bọc thành STORAGE_FAILURE, và nó bay lên
+    # trước khi cache bị đụng tới — đúng thứ tự an toàn nói ở trên.
+    catalog_repository.delete(filename)
 
     store.delete(filename)
     logger.info("Đã xoá catalog '%s'", filename)

@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -20,6 +22,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.api.catalogs import router as catalogs_router
 from app.core.config import LOG_LEVEL
+from app.core.db import dispose, init_db
 from app.core.errors import (
     AppError,
     CriticalError,
@@ -32,13 +35,42 @@ from app.core.errors import (
 )
 from app.core.logging import configure_logging, get_request_id, new_request_id, set_request_id
 from app.models.schemas import ApiResponse, Issue, from_error
+from app.services.store import store
 
 configure_logging(LOG_LEVEL)
 logger = logging.getLogger("app")
 
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    """Tạo bảng nếu chưa có, rồi nạp lại chỉ mục từ database.
+
+    Vì sao KHÔNG cho chết hẳn khi database không tới được: process chết lúc khởi
+    động thì Docker healthcheck restart, chết tiếp, restart tiếp — một vòng lặp
+    không ai đọc được log. Khởi động được rồi thì mỗi request tự trả
+    STORAGE_FAILURE đúng contract, và dòng CRITICAL dưới đây nói rõ lý do.
+
+    Không nuốt lỗi: nó được log ở mức CRITICAL kèm stack trace.
+    """
+    try:
+        init_db()
+        store.load_from_db()
+    except Exception:
+        logger.critical(
+            "Không khởi tạo được database lúc khởi động. API vẫn chạy nhưng mọi "
+            "thao tác đọc/ghi catalog sẽ trả STORAGE_FAILURE cho tới khi DB trở lại.",
+            exc_info=True,
+        )
+
+    yield
+
+    dispose()
+
+
 app = FastAPI(
     title="IDP Catalog Graph API",
     version="2.0",
+    lifespan=lifespan,
     description=(
         "Nạp catalog-info.yaml, validate 5 tầng và sinh graph JSON.\n\n"
         "Mọi endpoint trả về cùng một hình dạng response: "

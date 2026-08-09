@@ -21,7 +21,7 @@ The venv is `.venv` (Python 3.14 locally; Docker builds on python:3.11-slim, ruf
 
 ```powershell
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --reload --port 8000   # run API, Swagger at /docs
-.\.venv\Scripts\python.exe -m pytest tests/ -q                            # full suite (91 tests, ~1s)
+.\.venv\Scripts\python.exe -m pytest tests/ -q                            # full suite (96 tests, ~40s — hits Postgres)
 .\.venv\Scripts\python.exe -m pytest tests/test_catalog_api.py -q         # product tests only
 .\.venv\Scripts\python.exe -m pytest "tests/test_catalog_api.py::TestLayer2Security" -q         # one class
 .\.venv\Scripts\python.exe -m pytest "tests/test_catalog_api.py::TestDelete::test_goi_y_khi_go_tat" -q  # one test
@@ -41,6 +41,12 @@ Exit code 1 means the file has errors. `--no-timestamp` drops `generatedAt` so o
 
 Docker: `docker compose up --build` (needs `.env`; the container healthchecks `/health`).
 
+`DATABASE_URL` (Postgres, in `.env`) is **required** — there is no filesystem or in-memory fallback. `app/core/config.py` calls `load_dotenv()`, so a local uvicorn run picks `.env` up on its own. The `input_json` table is created automatically at startup; to create it without booting the API:
+
+```powershell
+.\.venv\Scripts\python.exe -c "from app.core.db import init_db; init_db()"
+```
+
 ## Architecture of `app/`
 
 Request flow, one direction, no layer reaching back:
@@ -49,11 +55,12 @@ Request flow, one direction, no layer reaching back:
 POST /catalogs
   api/catalogs.py      thin controller — extract from HTTP, call service, set status code
   services/ingest.py   the ONLY layer that knows step order:
-                         validate → cross-file conflict check → write JSON → index → build response
+                         validate → cross-file conflict check → save to DB → cache → build response
   services/validation.py   5-layer fail-fast pipeline (below)
   services/catalog_to_graph.py  YAML → nodes/edges/diagnostics (also a standalone CLI)
   services/catalog_merge.py     merge N ParsedFile → one graph doc; finds cross-file problems
-  services/store.py    in-memory index of successfully ingested catalogs
+  services/catalog_repository.py  the ONLY layer that touches SQLAlchemy
+  services/store.py    in-memory cache of the input_json table
 ```
 
 ### The response contract
@@ -109,12 +116,18 @@ Filename safety sits in L1 rather than L2 on purpose: reject `../../etc/passwd.y
 - `assert_invariants()` failing is a **bug in our generation code**, not bad input — it maps to `CriticalError`/`INCONSISTENT_STATE`, never to a validation message.
 - Output ordering is deterministic: nodes by id, edges by (declaring file, topology line index).
 
-### Persistence and state
+### Persistence and state (`app/core/db.py`, `app/services/catalog_repository.py`)
 
-- `store` is an in-memory, lock-guarded dict. It is only an **index** — the JSON files in `output_json/` are the source of truth. It does not survive a restart, and multiple uvicorn workers each get their own copy.
-- JSON is written temp-file-then-`os.replace` (atomic), and only after the file passed *all* validation. A partially valid file never reaches disk.
-- `delete` removes the JSON file first, then the index entry — so a failed unlink leaves a consistent, retryable state instead of an invisible orphan file.
-- `_resolve_output_path()` re-asserts containment in `OUTPUT_DIR` even though L1 already vetted the filename; safety must not depend on the caller remembering to validate.
+Postgres is the source of truth. Table `ai20k_db.input_json` has exactly two columns: `id BIGSERIAL PK` and `content JSONB` — the same graph document that used to be written to `output_json/*.json`. That directory is gone.
+
+- **The table is created by ORM, never by hand.** `app/models/tables.py` describes it; `init_db()` runs `CreateSchema(if_not_exists)` + `create_all`, then *verifies via `inspect()`* that `input_json` really landed in the expected schema before logging success — `create_all` is silent when a table already exists, so on its own it proves nothing. No Alembic yet.
+- Every connection gets `SET search_path` from an engine-level `connect` listener. The Neon URL already carries `options=-csearch_path%3D...`, but a pasted URL missing it would silently put the table in `public` — data still writes, nobody notices until they look for it.
+- **The lookup key is inside the JSON.** `id` is a serial, so rows are found by `content->'scope'->'sources'->0->>'file'` — the original upload filename, which `merge_documents` already writes into the document. No extra column, and nothing foreign is injected into `content`.
+- Re-uploading a file **UPDATEs its row** rather than inserting. The table models "the catalogs that exist", not an upload log; if it appended, `GET /catalogs` would have to guess which row is current.
+- `store` is now a **cache** of that table, warmed by `store.load_from_db()` in the `lifespan` handler, so a restart no longer empties the listing. Writes go to the DB first and the cache second — a DB failure must not leave the cache claiming a file was ingested. Multiple uvicorn workers still each hold their own cache, so one worker's upload isn't visible to another until restart.
+- `delete` removes the DB row first, then the cache entry — a failed delete leaves a consistent, retryable state instead of an orphan row that reappears on the next restart.
+- `size_bytes` is **not** recoverable after a restart (it's a property of the uploaded YAML, not of the JSON), so `CatalogSummary.size_bytes` is nullable and reads `null` for restored rows. `uploaded_at` survives via the document's own `generatedAt`.
+- `catalog_repository` is the only module importing SQLAlchemy. It wraps every `SQLAlchemyError` into `CriticalError`/`STORAGE_FAILURE`, and its `log_message` deliberately carries only the exception *class name* — psycopg2 connection errors can embed the full DSN, password included.
 
 ### Logging (`app/core/logging.py`)
 
@@ -124,12 +137,16 @@ Each request gets a `request_id` (ContextVar) that appears in every log line, in
 
 `data/happyCase/` holds valid catalogs; `data/testCase/` holds deliberately broken ones. `data/testCase/README-testset.md` documents the exact error codes and counts each fixture should produce, plus a list of known parser blind spots (email format, unknown `protocol`, typo'd field names) — check it before "fixing" something that looks like a gap. It references `run-testset.py`, which does not exist in this repo.
 
-Note `data/` and `output_json/` are gitignored despite being present locally.
+Note `data/` is gitignored despite being present locally. `output_json/` is no longer written to — if the directory is still on disk it is leftover and safe to delete.
 
 ## Test conventions
 
 `tests/test_catalog_api.py` is organized by validation layer, with `TestContract` asserting properties that must hold for *every* response (status matches severity, `request_id` always present, errors never set `can_continue=True`). When adding an endpoint, add it to `TestContract.ALL_REQUESTS` — that's what catches contract drift in endpoints nobody wrote targeted tests for.
 
-The autouse `isolate` fixture monkeypatches `ingest.OUTPUT_DIR` to a tmp dir and clears `store`; tests must never write to the real `output_json/`. `TestClient` is built with `raise_server_exceptions=False` so the 500 path is actually exercised instead of re-raising into pytest.
+**Tests hit a real Postgres** — there is no SQLite fallback, because the table uses JSONB/BIGSERIAL and the row lookup uses a Postgres JSON operator; a different engine would test a system that doesn't exist. The session-scoped `test_database` fixture points the engine at schema `ai20k_db_test` (`TEST_DB_SCHEMA`) on the same server, and drops it `CASCADE` at the end; it refuses to run if that name equals the production schema. The autouse `isolate` fixture `TRUNCATE`s the table and clears `store` between tests. Consequence: the suite needs network and takes ~40s.
+
+`TestClient` is built with `raise_server_exceptions=False` so the 500 path is actually exercised instead of re-raising into pytest. It is *not* used as a context manager, so the `lifespan` handler never runs in tests — the fixtures own DB setup instead.
+
+Use the `stored(filename)` / `row_count()` helpers to assert on what's actually in the table rather than reaching into `store`.
 
 Test names are Vietnamese-transliterated (`test_ten_file_nguy_hiem_bi_tu_choi`) — follow that pattern.

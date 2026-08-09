@@ -1,37 +1,78 @@
 """
-store.py — Kho lưu các catalog đã nạp thành công (in-memory).
+store.py — Cache trong RAM của bảng `input_json`.
 
-Tách khỏi tầng API vì hai lý do:
-  - Controller không nên biết dữ liệu nằm ở dict hay Postgres. Đổi sang DB thật
-    sau này chỉ cần viết lại file này, các tầng khác không đổi một dòng.
-  - Trạng thái nằm sau một class thì mọi đường ghi/xoá đi qua đúng vài phương
-    thức, kiểm soát được. `_store` là dict global thì bất cứ đâu cũng sửa được.
+Nguồn sự thật là DATABASE, không phải kho này. Kho chỉ giữ sẵn kết quả đã parse
+để `GET /catalogs` và bước kiểm tra xung đột xuyên file không phải đọc lại rồi
+dựng lại đồ thị từ JSON ở mọi request.
 
-GIỚI HẠN CẦN BIẾT: dữ liệu nằm trong RAM, restart server là mất sạch, và nhiều
-worker uvicorn thì mỗi worker có kho riêng. Chấp nhận được ở giai đoạn này vì
-file JSON đã ghi ra đĩa mới là nguồn sự thật; kho này chỉ là chỉ mục.
+Ba luật giữ cho cache không lệch khỏi DB:
+  - Ghi/xoá LUÔN đi qua DB trước, cập nhật cache sau. DB hỏng thì cache không đổi.
+  - `replaced` lấy từ kết quả DB trả về, không suy từ việc key có trong dict.
+  - Lúc khởi động, `load_from_db()` nạp lại toàn bộ — restart không mất danh sách.
+
+Vẫn còn một giới hạn: chạy nhiều worker uvicorn thì mỗi worker có cache riêng,
+nên worker A upload xong worker B chưa thấy ngay cho tới lần khởi động sau. Dữ
+liệu không sai (DB vẫn đúng), chỉ là danh sách có thể cũ. Chấp nhận được ở quy
+mô hiện tại; muốn bỏ hẳn thì cho `list()`/`all_parsed()` đọc thẳng DB.
 """
 
 from __future__ import annotations
 
+import logging
+import os
 import threading
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
 from app.models.schemas import CatalogSummary
-from app.services.catalog_to_graph import ParsedFile
+from app.services import catalog_repository
+from app.services.catalog_to_graph import Diagnostics, Issue, ParsedFile
+
+logger = logging.getLogger(__name__)
+
+
+def output_name(filename: str) -> str:
+    """'order-service.catalog.yaml' -> 'order-service.json'
+
+    Tên logic của tài liệu JSON. Không còn file nào trên đĩa mang tên này, nhưng
+    nó vẫn là nhãn frontend đang hiển thị và là tên gợi ý khi người dùng tải về.
+
+    Đặt ở đây chứ không ở `ingest` vì cả hai chiều đều cần: `ingest` dựng nó lúc
+    lưu, `StoredCatalog.from_document` dựng lại nó lúc nạp từ DB.
+    """
+    stem = os.path.splitext(filename)[0]
+    if stem.endswith(".catalog"):
+        stem = stem[: -len(".catalog")]
+    return f"{stem}.json"
+
+
+def _parse_generated_at(value: Any) -> datetime | None:
+    """'2026-08-09T10:20:30Z' -> datetime. Hỏng thì trả None chứ không nổ.
+
+    Trường này chỉ để hiển thị. Một tài liệu cũ có timestamp lạ không đáng để
+    chặn cả việc nạp lại chỉ mục lúc khởi động.
+    """
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 @dataclass
 class StoredCatalog:
-    """Một catalog đã qua đủ 5 tầng validate và đã ghi JSON ra đĩa."""
+    """Một catalog đã qua đủ 5 tầng validate và đã nằm trong bảng `input_json`."""
 
     parsed: ParsedFile
-    size_bytes: int
     fingerprint: str
     output_file: str | None
-    uploaded_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    record_id: int | None = None
+    # None với bản nạp lại từ DB: kích thước file YAML gốc không phải nội dung
+    # của JSON nên không lưu trong `content`, và bịa ra một con số còn tệ hơn.
+    size_bytes: int | None = None
+    uploaded_at: datetime | None = field(default_factory=lambda: datetime.now(UTC))
 
     @property
     def filename(self) -> str:
@@ -44,6 +85,45 @@ class StoredCatalog:
     @property
     def state(self) -> str:
         return "valid_with_warnings" if self.warning_count else "valid"
+
+    @classmethod
+    def from_document(
+        cls, document: dict[str, Any], record_id: int | None = None
+    ) -> StoredCatalog | None:
+        """Dựng lại từ JSON đã lưu. None nếu tài liệu không đủ để dựng.
+
+        Đây là chiều ngược của `_save_graph_document`: mọi thứ `CatalogSummary`
+        cần đều rút được từ chính nội dung JSON, trừ `size_bytes`.
+
+        Trả None thay vì raise: một dòng lạ trong bảng (bản cũ, ai đó chèn tay)
+        không được phép làm sập cả tiến trình lúc khởi động. Bỏ qua dòng đó và
+        ghi log là đủ.
+        """
+        filename = catalog_repository.document_filename(document)
+        if filename is None:
+            return None
+
+        sources = document.get("scope", {}).get("sources") or [{}]
+        diagnostics = document.get("diagnostics") or {}
+
+        parsed = ParsedFile(
+            filename=filename,
+            nodes=document.get("nodes") or {},
+            edges=document.get("edges") or [],
+            root_id=sources[0].get("root"),
+            diagnostics=Diagnostics(
+                errors=[Issue(**i) for i in diagnostics.get("errors", [])],
+                warnings=[Issue(**i) for i in diagnostics.get("warnings", [])],
+            ),
+        )
+        return cls(
+            parsed=parsed,
+            fingerprint="",
+            output_file=output_name(filename),
+            record_id=record_id,
+            size_bytes=None,
+            uploaded_at=_parse_generated_at(document.get("generatedAt")),
+        )
 
     def summary_dict(self, include_diagnostics: bool = False) -> dict[str, Any]:
         """Đi qua model `CatalogSummary` chứ không tự dựng dict.
@@ -63,12 +143,13 @@ class StoredCatalog:
             size_bytes=self.size_bytes,
             uploaded_at=self.uploaded_at,
             output_file=self.output_file,
+            record_id=self.record_id,
             diagnostics=self.parsed.diagnostics.as_dict() if include_diagnostics else None,
         ).model_dump(mode="json")
 
 
 class CatalogStore:
-    """Kho catalog, an toàn với truy cập đồng thời.
+    """Cache catalog, an toàn với truy cập đồng thời.
 
     `Lock` là cần thiết dù FastAPI chạy async: endpoint đồng bộ được uvicorn đẩy
     ra threadpool, nên hai request có thể sửa dict cùng lúc thật.
@@ -78,16 +159,15 @@ class CatalogStore:
         self._items: dict[str, StoredCatalog] = {}
         self._lock = threading.Lock()
 
-    def put(self, item: StoredCatalog) -> bool:
-        """Lưu (hoặc thay thế). Trả True nếu đã GHI ĐÈ một bản cũ.
+    def put(self, item: StoredCatalog) -> None:
+        """Cập nhật cache sau khi DB đã ghi xong.
 
-        Trả về cờ này để tầng trên biết mà báo warning FILE_REPLACED — ghi đè
-        âm thầm là cách dễ nhất để người dùng mất dữ liệu mà không hay biết.
+        Không trả cờ `replaced` như bản cũ: chuyện "có ghi đè hay không" giờ do
+        DB trả lời (`catalog_repository.save`). Cache mà tự trả lời câu đó thì
+        sau một lần restart giữa chừng nó sẽ nói sai.
         """
         with self._lock:
-            replaced = item.filename in self._items
             self._items[item.filename] = item
-            return replaced
 
     def get(self, filename: str) -> StoredCatalog | None:
         with self._lock:
@@ -120,6 +200,31 @@ class CatalogStore:
         """
         with self._lock:
             return [i.parsed for name, i in self._items.items() if name != exclude]
+
+    def load_from_db(self) -> int:
+        """Nạp lại toàn bộ chỉ mục từ bảng `input_json`. Trả số bản ghi đã nạp.
+
+        Gọi lúc khởi động: dữ liệu đã vào DB thì restart xong phải nhìn thấy lại,
+        nếu không người dùng sẽ tưởng mất dữ liệu và upload đè lên chính nó.
+        """
+        documents = catalog_repository.all_documents()
+
+        loaded: dict[str, StoredCatalog] = {}
+        skipped = 0
+        for record_id, doc in documents:
+            item = StoredCatalog.from_document(doc, record_id)
+            if item is None:
+                skipped += 1
+                continue
+            loaded[item.filename] = item
+
+        with self._lock:
+            self._items = loaded
+
+        if skipped:
+            logger.warning("Bỏ qua %d dòng không dựng lại được từ input_json", skipped)
+        logger.info("Đã nạp %d catalog từ database vào chỉ mục", len(loaded))
+        return len(loaded)
 
     def clear(self) -> None:
         with self._lock:

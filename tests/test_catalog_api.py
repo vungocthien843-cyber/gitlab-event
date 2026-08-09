@@ -13,13 +13,16 @@ Loại test này bắt được cả những lỗi ở endpoint chưa ai nghĩ t
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import text
 
 from app.core import config
+from app.core import db as core_db
 from app.main import app
-from app.services import ingest
+from app.services import catalog_repository, ingest
 from app.services.store import store
 
 client = TestClient(app, raise_server_exceptions=False)
@@ -99,19 +102,62 @@ def upload(name: str, text: str | bytes, content_type: str = "application/x-yaml
     return client.post("/catalogs", files={"file": (name, data, content_type)})
 
 
+@pytest.fixture(scope="session", autouse=True)
+def test_database():
+    """Dựng một SCHEMA RIÊNG trên chính Postgres thật, xoá sạch lúc xong.
+
+    Vì sao không dùng SQLite cho nhanh: bảng dùng JSONB và BIGSERIAL, còn phép
+    tra cứu dựa trên toán tử JSON của Postgres. Test trên một engine khác là test
+    một hệ thống không tồn tại — nó xanh trong khi production vẫn hỏng.
+
+    Vì sao là schema riêng chứ không phải bảng riêng: `DROP SCHEMA ... CASCADE`
+    dọn được mọi thứ test tạo ra trong đúng một câu, kể cả những thứ thêm vào sau
+    này. Và không có đường nào để một câu lệnh trong test chạm tới `ai20k_db`.
+    """
+    if not config.DATABASE_URL:
+        pytest.fail(
+            "Thiếu DATABASE_URL. Bộ test chạy trên Postgres thật (schema riêng), "
+            "không có bản giả lập — hãy đặt biến này trong .env."
+        )
+
+    schema = os.getenv("TEST_DB_SCHEMA", "ai20k_db_test")
+    if schema == (config.DB_SCHEMA or config.DB_SCHEMA_FALLBACK):
+        pytest.fail(
+            f"TEST_DB_SCHEMA trùng schema production ('{schema}'). "
+            "Test sẽ TRUNCATE bảng nên phải nằm ở schema khác."
+        )
+
+    core_db.configure(config.DATABASE_URL, schema)
+    core_db.init_db()
+
+    yield
+
+    with core_db.get_engine().begin() as conn:
+        conn.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
+    core_db.dispose()
+
+
 @pytest.fixture(autouse=True)
-def isolate(tmp_path, monkeypatch):
-    """Mỗi test chạy trên kho rỗng và thư mục output riêng — không đụng vào
-    output_json/ thật của dự án."""
-    monkeypatch.setattr(ingest, "OUTPUT_DIR", str(tmp_path))
+def isolate():
+    """Mỗi test bắt đầu với bảng rỗng và cache rỗng."""
+    _truncate()
     store.clear()
     yield
     store.clear()
 
 
-@pytest.fixture
-def output_dir(tmp_path):
-    return tmp_path
+def _truncate() -> None:
+    with core_db.get_engine().begin() as conn:
+        conn.execute(text("TRUNCATE TABLE input_json RESTART IDENTITY"))
+
+
+def stored(filename: str) -> dict | None:
+    """Tài liệu JSON đang nằm trong bảng cho file này (None nếu không có)."""
+    return catalog_repository.find(filename)
+
+
+def row_count() -> int:
+    return catalog_repository.count()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -176,7 +222,7 @@ class TestContract:
 
 
 class TestHappyPath:
-    def test_file_hop_le_tra_success_va_ghi_json(self, output_dir):
+    def test_file_hop_le_tra_success_va_luu_db(self):
         r = upload("order-service.yaml", VALID_YAML)
         assert r.status_code == 201
 
@@ -191,23 +237,29 @@ class TestHappyPath:
         assert body["details"]["root"] == "component:order/order-service"
         assert body["details"]["node_count"] > 0
 
-        written = output_dir / "order-service.json"
-        assert written.exists()
-        graph = json.loads(written.read_text(encoding="utf-8"))
+        assert body["details"]["output_file"] == "order-service.json"
+        assert isinstance(body["details"]["record_id"], int)
+
+        graph = stored("order-service.yaml")
+        assert graph is not None
         assert graph["nodes"]["component:order/order-service"]["spec"]["type"] == "worker"
 
-    def test_duoi_yml_va_hau_to_catalog_deu_duoc(self, output_dir):
+    def test_duoi_yml_va_hau_to_catalog_deu_duoc(self):
         assert upload("payment.catalog.yml", make_yaml(sid="payment-service")).status_code == 201
-        assert (output_dir / "payment.json").exists()
+        assert stored("payment.catalog.yml") is not None
 
     def test_upload_lai_cung_ten_bao_warning_ghi_de(self):
-        upload("order-service.yaml", VALID_YAML)
+        first = upload("order-service.yaml", VALID_YAML).json()
         body = upload("order-service.yaml", VALID_YAML).json()
 
         assert body["status"] == "warning"
         assert body["can_continue"] is True
         assert body["details"]["replaced_existing"] is True
         assert any(i["code"] == "FILE_REPLACED" for i in body["issues"])
+        # Ghi ĐÈ đúng dòng cũ, không chèn thêm dòng mới: bảng phản ánh "các
+        # catalog đang có", không phải nhật ký upload.
+        assert body["details"]["record_id"] == first["details"]["record_id"]
+        assert row_count() == 1
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -216,7 +268,7 @@ class TestHappyPath:
 
 
 class TestWarning:
-    def test_canh_bao_khong_chan_luong(self, output_dir):
+    def test_canh_bao_khong_chan_luong(self):
         r = upload("warn.yaml", WARNING_YAML)
         assert r.status_code == 201
 
@@ -228,8 +280,8 @@ class TestWarning:
         assert body["code"] == "HAS_WARNINGS"
         assert {i["code"] for i in body["issues"]} >= {"MISSING_SYSTEM_REF"}
         assert all(i["severity"] == "warning" for i in body["issues"])
-        # Có warning vẫn phải ghi được file: warning là "để ý", không phải "dừng".
-        assert (output_dir / "warn.json").exists()
+        # Có warning vẫn phải lưu được: warning là "để ý", không phải "dừng".
+        assert stored("warn.yaml") is not None
 
     def test_file_co_warning_van_nam_trong_danh_sach(self):
         upload("warn.yaml", WARNING_YAML)
@@ -305,9 +357,9 @@ class TestLayer2Security:
         assert body["code"] == "UNSAFE_FILENAME"
         assert body["severity"] == "critical"
 
-    def test_path_traversal_khong_ghi_duoc_file_nao(self, output_dir):
+    def test_path_traversal_khong_luu_duoc_gi(self):
         upload("../../evil.yaml", VALID_YAML)
-        assert list(output_dir.rglob("*.json")) == []
+        assert row_count() == 0
 
     def test_file_nhi_phan_doi_lot_yaml(self):
         r = upload("fake.yaml", b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
@@ -432,10 +484,10 @@ class TestLayer5Data:
         assert r.status_code == 422
         assert any(i["code"] == "UNSUPPORTED_VERSION" for i in r.json()["issues"])
 
-    def test_file_loi_khong_ghi_json_va_khong_vao_kho(self, output_dir):
-        """Bản cũ ghi JSON kể cả khi parse còn lỗi -> output tích luỹ rác."""
+    def test_file_loi_khong_luu_db_va_khong_vao_kho(self):
+        """Bản cũ ghi JSON kể cả khi parse còn lỗi -> kho tích luỹ rác."""
         upload("invalid.yaml", INVALID_DATA_YAML)
-        assert list(output_dir.rglob("*.json")) == []
+        assert row_count() == 0
         assert client.get("/catalogs").json()["details"]["total"] == 0
 
 
@@ -468,11 +520,11 @@ class TestHumanInTheLoop:
         assert body["can_continue"] is False
         assert body["issues"][0]["code"] == "AMBIGUOUS_OWNER"
 
-    def test_tranh_chap_khong_lam_hong_du_lieu_da_co(self, output_dir):
+    def test_tranh_chap_khong_lam_hong_du_lieu_da_co(self):
         upload("a.yaml", self.PROVIDER_A)
         upload("b.yaml", self.PROVIDER_B)
         assert client.get("/catalogs").json()["details"]["total"] == 1
-        assert not (output_dir / "b.json").exists()
+        assert stored("b.yaml") is None
 
     def test_upload_lai_chinh_no_khong_bi_coi_la_tranh_chap(self):
         upload("a.yaml", make_yaml())
@@ -504,9 +556,11 @@ class TestListAndSearch:
     def test_moi_dong_du_thong_tin_de_render_bang(self):
         item = client.get("/catalogs").json()["details"]["items"][0]
         for field in ("file", "root", "state", "error_count", "warning_count",
-                      "node_count", "edge_count", "size_bytes", "uploaded_at", "output_file"):
+                      "node_count", "edge_count", "size_bytes", "uploaded_at",
+                      "output_file", "record_id"):
             assert field in item
         assert item["output_file"] == "order-service.json"
+        assert isinstance(item["record_id"], int)
 
     def test_tim_kiem_theo_chuoi_con(self):
         d = client.get("/catalogs", params={"q": "order"}).json()["details"]
@@ -541,9 +595,9 @@ class TestListAndSearch:
 
 
 class TestDelete:
-    def test_xoa_ca_ban_ghi_lan_file_json(self, output_dir):
+    def test_xoa_ca_ban_ghi_lan_dong_trong_db(self):
         upload("order-service.yaml", VALID_YAML)
-        assert (output_dir / "order-service.json").exists()
+        assert stored("order-service.yaml") is not None
 
         r = client.delete("/catalogs/order-service.yaml")
         assert r.status_code == 200
@@ -551,7 +605,7 @@ class TestDelete:
         body = r.json()
         assert body["status"] == "success"
         assert body["details"]["remaining"] == 0
-        assert not (output_dir / "order-service.json").exists()
+        assert stored("order-service.yaml") is None
         assert client.get("/catalogs").json()["details"]["total"] == 0
 
     def test_xoa_file_khong_ton_tai_kem_goi_y(self):
@@ -588,6 +642,79 @@ class TestDelete:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Bền vững qua restart — thứ mà bản ghi ra thư mục output_json/ không làm được
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestPersistence:
+    # Khác namespace/system với VALID_YAML để hai file không tranh chấp quyền
+    # sở hữu; thiếu ref 'system' nên vẫn sinh đúng một cảnh báo.
+    WARN_KHAC = make_yaml(
+        sid="payment-service", namespace="payment", system="payment-system",
+        topology="\n    - ref: resource:payment/payment-db",
+    )
+
+    def test_nap_lai_chi_muc_tu_db_sau_restart(self):
+        """`store.clear()` mô phỏng một lần restart: cache RAM mất sạch, database
+        còn nguyên. Nạp lại xong danh sách phải trở lại như cũ — nếu không, người
+        dùng sẽ tưởng mất dữ liệu và upload đè lên chính nó."""
+        assert upload("order-service.yaml", VALID_YAML).status_code == 201
+        assert upload("warn.yaml", self.WARN_KHAC).status_code == 201
+
+        store.clear()
+        assert client.get("/catalogs").json()["details"]["total"] == 0
+
+        assert store.load_from_db() == 2
+
+        items = client.get("/catalogs").json()["details"]["items"]
+        assert [i["file"] for i in items] == ["order-service.yaml", "warn.yaml"]
+
+        khoi_phuc = {i["file"]: i for i in items}
+        assert khoi_phuc["order-service.yaml"]["root"] == "component:order/order-service"
+        assert khoi_phuc["order-service.yaml"]["state"] == "valid"
+        assert khoi_phuc["order-service.yaml"]["node_count"] > 0
+        assert khoi_phuc["warn.yaml"]["state"] == "valid_with_warnings"
+        assert khoi_phuc["warn.yaml"]["warning_count"] > 0
+        # Nạp lại phải biết mình là dòng nào trong bảng, không để null.
+        assert all(isinstance(i["record_id"], int) for i in items)
+
+    def test_canh_bao_chi_tiet_van_con_sau_khi_nap_lai(self):
+        """Diagnostics nằm trong JSON nên phải sống sót nguyên vẹn."""
+        upload("warn.yaml", WARNING_YAML)
+        goc = client.get("/catalogs", params={"include": "diagnostics"}).json()
+
+        store.clear()
+        store.load_from_db()
+        sau = client.get("/catalogs", params={"include": "diagnostics"}).json()
+
+        assert sau["details"]["items"][0]["diagnostics"] == \
+            goc["details"]["items"][0]["diagnostics"]
+
+    def test_size_bytes_khong_khoi_phuc_duoc_thi_bao_null(self):
+        """Kích thước file YAML gốc không phải nội dung của JSON nên không lưu.
+        Trả null trung thực hơn là bịa một con số."""
+        upload("order-service.yaml", VALID_YAML)
+        assert client.get("/catalogs").json()["details"]["items"][0]["size_bytes"] > 0
+
+        store.clear()
+        store.load_from_db()
+        item = client.get("/catalogs").json()["details"]["items"][0]
+        assert item["size_bytes"] is None
+        assert item["uploaded_at"] is not None  # lấy được từ generatedAt
+
+    def test_upload_lai_sau_restart_van_biet_la_ghi_de(self):
+        """Cache mất nhưng DB nhớ -> vẫn phải báo FILE_REPLACED, không lặng lẽ
+        đè lên bản cũ."""
+        upload("order-service.yaml", VALID_YAML)
+        store.clear()
+        store.load_from_db()
+
+        body = upload("order-service.yaml", VALID_YAML).json()
+        assert body["details"]["replaced_existing"] is True
+        assert row_count() == 1
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Fail-safe
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -598,7 +725,7 @@ class TestFailSafe:
         def no_dau(*args, **kwargs):
             raise RuntimeError("hỏng ở chỗ không ai lường trước")
 
-        monkeypatch.setattr(ingest, "_write_graph_json", no_dau)
+        monkeypatch.setattr(ingest, "_save_graph_document", no_dau)
 
         r = upload("order-service.yaml", VALID_YAML)
         assert r.status_code == 500
@@ -613,14 +740,14 @@ class TestFailSafe:
         def no_dau(*args, **kwargs):
             raise RuntimeError("/srv/secret/path/db.sqlite: password=hunter2")
 
-        monkeypatch.setattr(ingest, "_write_graph_json", no_dau)
+        monkeypatch.setattr(ingest, "_save_graph_document", no_dau)
 
         body = upload("order-service.yaml", VALID_YAML).json()
         assert "hunter2" not in json.dumps(body)
         assert "/srv/secret" not in json.dumps(body)
 
-    def test_ghi_dia_that_bai_khong_luu_vao_kho(self, monkeypatch):
-        """Ghi đĩa hỏng -> KHÔNG được đánh dấu là đã nạp thành công."""
+    def test_ghi_that_bai_khong_luu_vao_kho(self, monkeypatch):
+        """Dựng tài liệu hỏng -> KHÔNG được đánh dấu là đã nạp thành công."""
         def khong_ghi_duoc(*args, **kwargs):
             raise OSError(28, "No space left on device")
 
@@ -629,6 +756,34 @@ class TestFailSafe:
         r = upload("order-service.yaml", VALID_YAML)
         assert r.status_code == 500
         assert r.json()["code"] == "STORAGE_FAILURE"
+        assert client.get("/catalogs").json()["details"]["total"] == 0
+
+    def test_db_hong_van_dung_contract_va_khong_lo_dsn(self, monkeypatch):
+        """DB chết là tình huống ta HIỂU RÕ -> STORAGE_FAILURE, không phải
+        INTERNAL_ERROR. Và thông điệp psycopg2 hay kèm chuỗi kết nối, tức là kèm
+        mật khẩu — nó không được phép đi ra tới client."""
+        from sqlalchemy.exc import OperationalError
+
+        def db_chet(*args, **kwargs):
+            raise OperationalError(
+                "SELECT 1",
+                {},
+                Exception("could not connect: password=sieu-bi-mat host=db.internal"),
+            )
+
+        # Chặn ở tầng session chứ không phải ở `save`: như vậy code thật của
+        # repository vẫn chạy và ta kiểm tra được đúng phép ánh xạ lỗi của nó.
+        monkeypatch.setattr(catalog_repository, "session_scope", db_chet)
+
+        r = upload("order-service.yaml", VALID_YAML)
+        assert r.status_code == 500
+
+        body = r.json()
+        assert body["code"] == "STORAGE_FAILURE"
+        assert body["stage"] == "persist"
+        assert body["next_action"] == "contact_support"
+        assert "sieu-bi-mat" not in json.dumps(body)
+        assert "db.internal" not in json.dumps(body)
         assert client.get("/catalogs").json()["details"]["total"] == 0
 
     def test_route_khong_ton_tai_van_dung_contract(self):
