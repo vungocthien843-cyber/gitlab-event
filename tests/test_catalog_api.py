@@ -19,11 +19,11 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
-from app.core import config
-from app.core import db as core_db
-from app.main import app
-from app.services import catalog_repository, ingest
-from app.services.store import store
+from src.core import config
+from src.core import db as core_db
+from src.main import app
+from src.services import catalog_repository, ingest
+from src.services.store import store
 
 client = TestClient(app, raise_server_exceptions=False)
 
@@ -802,3 +802,4 @@ class TestHealth:
         r = client.get("/health")
         assert r.status_code == 200
         assert r.json() == {"status": "ok"}
+

@@ -36,17 +36,17 @@ from typing import Any
 
 from fastapi import UploadFile
 
-from app.core import config
-from app.core.errors import (
+from src.core import config
+from src.core.errors import (
     CriticalError,
     ErrorCode,
     SecurityError,
     Stage,
     ValidationError,
 )
-from app.core.logging import content_fingerprint
-from app.models.schemas import Issue
-from app.services.catalog_to_graph import (
+from src.core.logging import content_fingerprint
+from src.models.schemas import Issue
+from src.services.catalog_to_graph import (
     Diagnostics,
     FatalError,
     ParsedFile,
@@ -527,3 +527,4 @@ def run_validation_pipeline(
         parsed=parsed,
         warnings=warnings,
     )
+

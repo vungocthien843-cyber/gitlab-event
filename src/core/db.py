@@ -6,7 +6,7 @@ Không có SQL thuần nào trong dự án: bảng được mô tả bằng mode
 Muốn thêm cột thì sửa model, không phải mở console gõ ALTER TABLE.
 
 Vì sao engine tạo LƯỜI (lazy) chứ không tạo ngay lúc import: import module không
-được phép mở kết nối mạng. Nếu tạo ngay, chỉ cần `import app.main` lúc DB đang
+được phép mở kết nối mạng. Nếu tạo ngay, chỉ cần `import src.main` lúc DB đang
 sập là cả tiến trình chết trước khi kịp log ra một dòng tử tế — và test cũng
 không đổi được URL trước khi engine kịp ra đời.
 """
@@ -22,7 +22,7 @@ from sqlalchemy import Engine, create_engine, event, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Session
 from sqlalchemy.schema import CreateSchema
 
-from app.core.config import (
+from src.core.config import (
     DATABASE_URL,
     DB_CONNECT_TIMEOUT_SECONDS,
     DB_ECHO,
@@ -30,7 +30,7 @@ from app.core.config import (
     DB_SCHEMA,
     DB_SCHEMA_FALLBACK,
 )
-from app.core.errors import CriticalError, ErrorCode, Stage
+from src.core.errors import CriticalError, ErrorCode, Stage
 
 logger = logging.getLogger(__name__)
 
@@ -159,7 +159,7 @@ def init_db() -> None:
     """
     # import ở đây, không ở đầu file: model phải được nạp thì mới có mặt trong
     # Base.metadata, nhưng model lại import Base từ chính module này.
-    from app.models import tables  # noqa: F401
+    from src.models import tables  # noqa: F401
 
     engine = get_engine()
     schema = active_schema()
@@ -189,3 +189,4 @@ def init_db() -> None:
                 f"schema '{schema}'. Bảng có thể đã rơi vào schema khác."
             ),
         )
+

@@ -129,6 +129,17 @@ class ErrorCode(StrEnum):
     # ── Tra cứu / xoá ────────────────────────────────────────────────────────
     CATALOG_NOT_FOUND = "CATALOG_NOT_FOUND"
 
+    # ── GitHub webhook ───────────────────────────────────────────────────────
+    # Chữ ký HMAC sai/thiếu -> SecurityError (400). Không phải "input sai định
+    # dạng" mà là "request này không chứng minh được nó đến từ GitHub".
+    INVALID_SIGNATURE = "INVALID_SIGNATURE"
+    # Server chưa cấu hình WEBHOOK_SECRET -> CriticalError (500). Lỗi của ta,
+    # không phải của người gửi; tuyệt đối không được bỏ qua bước xác thực.
+    WEBHOOK_NOT_CONFIGURED = "WEBHOOK_NOT_CONFIGURED"
+    # Không tải được nội dung file từ GitHub. Dùng làm `Issue.code` trong response
+    # chứ không raise: một file hỏng không được làm hỏng cả lần push.
+    GITHUB_FETCH_FAILED = "GITHUB_FETCH_FAILED"
+
     # ── Critical ─────────────────────────────────────────────────────────────
     STORAGE_FAILURE = "STORAGE_FAILURE"
     INTERNAL_ERROR = "INTERNAL_ERROR"

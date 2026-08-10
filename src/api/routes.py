@@ -1,27 +1,34 @@
 
 from __future__ import annotations
 
-import os
-import hmac
-import hashlib
+import json
 import logging
-import httpx # Dùng httpx thay cho requests vì FastAPI ưu tiên bất đồng bộ (async)
 from typing import Literal
 from urllib.parse import unquote
-from dotenv import load_dotenv # Quan trọng: Để đọc biến từ file .env khi test local
 
-from fastapi import APIRouter, File, Query, Response, UploadFile, status, Request, Header, HTTPException
+from fastapi import (
+    APIRouter,
+    File,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+    status,
+)
 
-from app.core.logging import get_request_id
-from app.models.schemas import ApiResponse
-from app.services import ingest
-from app.services.validation import read_upload_within_limit
-
+from src.core.logging import get_request_id
+from src.models import schemas
+from src.models.schemas import ApiResponse
+from src.services import ingest
+from src.services.validation import read_upload_within_limit
 from src.agents.graph import agent
 from src.models.schemas import ChatRequest, ChatResponse
+from src.services import github_events
 
-# Tải các biến môi trường từ file .env vào hệ thống
-load_dotenv()
+# Không gọi load_dotenv() ở đây: app/core/config.py đã nạp .env lúc import (và
+# nạp theo đường dẫn tuyệt đối, nên chạy uvicorn từ thư mục nào cũng đúng).
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +117,7 @@ def delete_catalog(filename: str, response: Response) -> ApiResponse:
 
 @router.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest) -> ChatResponse:
-    """Chat với AI agent."""
+    """Chat vá»›i AI agent."""
     try:
         result = await agent.ainvoke({"query": request.message})
         return ChatResponse(
@@ -127,142 +134,55 @@ async def agent_status():
 
 
 # ==========================================
-# CẤU HÌNH WEBHOOK (Lấy từ biến môi trường)
+# WEBHOOK GITHUB — nạp/xoá catalog tự động khi có push
 # ==========================================
-WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET")
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
-
-# --- HÀM PHỤ: LẤY NỘI DUNG RAW CỦA FILE TỪ GITHUB ---
-async def fetch_file_content_from_github(repo_full_name: str, commit_id: str, file_path: str) -> str:
-    url = f"https://api.github.com/repos/{repo_full_name}/contents/{file_path}?ref={commit_id}"
-    
-    headers = {
-        "Authorization": f"token {GITHUB_TOKEN}", # Dùng 'token' hoặc 'Bearer'
-        "Accept": "application/vnd.github.v3.raw",
-        "X-GitHub-Api-Version": "2022-11-28" 
-    }
-    
-    async with httpx.AsyncClient() as client:
-        response = await client.get(url, headers=headers)
-        
-    if response.status_code == 200:
-        return response.text
-    else:
-        # IN ĐẬM LỖI RA VERCEL ĐỂ BẮT BỆNH
-        print(f"=====================================")
-        print(f" LỖI LẤY FILE: {file_path}")
-        print(f" TRẠNG THÁI: {response.status_code}")
-        print(f" CHI TIẾT LỖI TỪ GITHUB: {response.text}")
-        print(f" URL ĐÃ GỌI: {url}")
-        print(f"=====================================")
-        return None
-
-# ==========================================
-# ROUTER CHÍNH: XỬ LÝ SỰ KIỆN GITHUB WEBHOOK
-# ==========================================
-@router.post("/webhook/github")
+@router.post(
+    "/webhook/github",
+    response_model=ApiResponse,
+    summary="Nhận sự kiện push từ GitHub",
+    responses={
+        200: {"description": "Đã xử lý (status=success) hoặc có file lỗi (status=warning)"},
+        400: {"description": "Chữ ký HMAC sai hoặc thiếu (INVALID_SIGNATURE)"},
+        500: {"description": "Server chưa cấu hình WEBHOOK_SECRET"},
+    },
+)
 async def github_webhook_handler(
     request: Request,
     x_github_event: str = Header(None),
-    x_hub_signature_256: str = Header(None)
-):
-    # ------------------------------------------
-    # 1. BẢO MẬT & LỌC SỰ KIỆN
-    # ------------------------------------------
+    x_hub_signature_256: str = Header(None),
+) -> ApiResponse:
+    """Push lên GitHub -> ghi nhật ký + tự nạp/xoá catalog tương ứng.
+
+    File `added`/`modified` được tải về và đẩy qua đúng pipeline validate 5 tầng
+    của `POST /catalogs`; file `removed` thì gọi `delete_catalog`. Toàn bộ thứ tự
+    các bước nằm ở `src/services/github_events.py`, controller chỉ bóc header ra
+    và gọi service.
+
+    Một file YAML sai vẫn trả HTTP 200 kèm `status=warning`: trả 4xx/5xx sẽ khiến
+    GitHub đánh dấu delivery thất bại rồi retry, mà retry thì file vẫn sai y cũ.
+    """
     body = await request.body()
-    
-    # Kiểm tra xem có cấu hình Secret chưa (để tránh lỗi 'NoneType' has no attribute 'encode')
-    if not WEBHOOK_SECRET:
-        raise HTTPException(status_code=500, detail="Lỗi Server: Chưa cấu hình WEBHOOK_SECRET")
-
-    if not x_hub_signature_256:
-        raise HTTPException(status_code=401, detail="Thiếu chữ ký bảo mật")
-
-    expected_signature = "sha256=" + hmac.new(
-        WEBHOOK_SECRET.encode("utf-8"), body, hashlib.sha256
-    ).hexdigest()
-
-    if not hmac.compare_digest(expected_signature, x_hub_signature_256):
-        raise HTTPException(status_code=403, detail="Chữ ký giả mạo!")
+    # Xác thực trên body THÔ, trước khi parse — chữ ký ký trên đúng chuỗi byte
+    # GitHub gửi đi. Raise SecurityError/CriticalError, handler toàn cục ở
+    # src/main.py lo phần dựng response.
+    github_events.verify_signature(body, x_hub_signature_256)
 
     if x_github_event == "ping":
-        return {"status": "success", "message": "Pong! Webhook OK."}
-        
+        return schemas.success("Webhook đã kết nối.", request_id=get_request_id())
+
     if x_github_event != "push":
-        return {"status": "ignored", "message": "Chỉ xử lý sự kiện push."}
+        return schemas.success(
+            f"Bỏ qua sự kiện '{x_github_event}' — chỉ xử lý push.",
+            request_id=get_request_id(),
+        )
 
-    # ------------------------------------------
-    # 2. TRÍCH XUẤT METADATA TỪ WEBHOOK
-    # ------------------------------------------
-    payload = await request.json()
-    commits = payload.get("commits", [])
-    
-    if not commits:
-        return {"status": "ignored", "message": "Không có commit nào."}
+    event = github_events.parse_push_payload(json.loads(body))
+    if event is None:
+        # Push tag, push xoá nhánh, hoặc push không chạm file YAML nào. Không
+        # phải lỗi của ai — GitHub bắn webhook cho mọi push là đúng việc của nó.
+        return schemas.success(
+            "Push không có file YAML nào cần xử lý.", request_id=get_request_id()
+        )
 
-    # Lấy thông tin từ commit cuối cùng (đại diện cho lần push này)
-    latest_commit = commits[-1]
-    commit_id = latest_commit["id"]
-    repo_name = payload["repository"]["full_name"]
-    committer_name = latest_commit["author"]["name"] 
-    timestamp = latest_commit["timestamp"] 
+    return await github_events.handle_push(event, request_id=get_request_id())
 
-    # ------------------------------------------
-    # 3. TÌM FILE YAML BỊ THAY ĐỔI (ĐÃ SỬA LỖI MẢNG RỖNG)
-    # ------------------------------------------
-    changed_files = set() # Dùng tập hợp (set) để tránh trùng lặp file
-    
-    # Quét TẤT CẢ các commit trong lần push này để gom file, không chỉ quét 1 commit cuối nữa
-    for commit in commits:
-        for file in commit.get("added", []):
-            changed_files.add(file)
-        for file in commit.get("modified", []):
-            changed_files.add(file)
-    
-    # Lọc ra chỉ lấy các file có đuôi .yaml hoặc .yml
-    yaml_files = [f for f in changed_files if f.endswith('.yaml') or f.endswith('.yml')]
-
-    # ------------------------------------------
-    # 4. FETCH NỘI DUNG CODE & ĐÓNG GÓI DỮ LIỆU
-    # ------------------------------------------
-    files_content_data = [] 
-    errors = [] # Tạo một mảng lưu lỗi
-
-    for file_path in yaml_files:
-        raw_content = await fetch_file_content_from_github(repo_name, commit_id, file_path)
-        
-        if raw_content:
-            try:
-                # GỌI HÀM INGEST THẬT CỦA HỆ THỐNG
-                ingest.ingest_catalog(
-                    filename=file_path.split("/")[-1], # Chỉ lấy tên file thay vì cả đường dẫn dài
-                    content=raw_content.encode("utf-8"), # Chuyển text thô thành bytes
-                    content_type="application/x-yaml",
-                    request_id=get_request_id()
-                )
-                
-                files_content_data.append({
-                    "file_path": file_path,
-                    "status": "Đã lưu vào DB thành công"
-                })
-            except Exception as e:
-                # Nếu file YAML sai cấu trúc, bắt lỗi lại để không làm sập toàn bộ Webhook
-                errors.append(f"Lỗi kiểm duyệt file {file_path}: {str(e)}")
-        else:
-            # Nếu không lấy được file, ghi lại lý do để xem
-            errors.append(f"Không lấy được nội dung cho file: {file_path}")
-
-    response_data = {
-        "status": "Success",
-        "metadata": {
-            "committer_name": committer_name,
-            "timestamp": timestamp,
-            "commit_id": commit_id,
-            "repo_name": repo_name,
-            "commit_message": latest_commit["message"]
-        },
-        "yaml_changes": files_content_data,
-        "debug_errors": errors # Xuất mảng lỗi này ra kết quả trả về
-    }
-
-    return {"status": "success", "data": response_data}

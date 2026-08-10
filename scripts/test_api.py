@@ -44,7 +44,7 @@ if hasattr(sys.stdout, "buffer"):
 import httpx  # noqa: E402
 from sqlalchemy import create_engine, text  # noqa: E402
 
-from app.core.config import (  # noqa: E402
+from src.core.config import (  # noqa: E402
     DATABASE_URL,
     DB_SCHEMA,
     DB_SCHEMA_FALLBACK,
@@ -134,7 +134,7 @@ def vi_pham_contract(body: dict[str, Any]) -> list[str]:
         if body["status"] == "error" and body["can_continue"]:
             loi.append("lỗi nhưng can_continue=True")
         if not body["request_id"]:
-            loi.append("request_id rỗng")
+            loi.append("request_id rá»—ng")
     return loi
 
 
@@ -233,7 +233,7 @@ class Server:
 
     def start(self) -> None:
         self.proc = subprocess.Popen(
-            [sys.executable, "-m", "uvicorn", "app.main:app",
+            [sys.executable, "-m", "uvicorn", "src.main:app",
              "--port", str(self.port), "--log-level", "warning"],
             cwd=str(ROOT),
             stdout=subprocess.DEVNULL,
@@ -389,7 +389,7 @@ def kiem_ghi_de(api: Api, db: Db, rp: Report) -> None:
 def kiem_layer1(api: Api, rp: Report) -> None:
     rp.section("5. Tầng 1 — input cơ bản")
     cases = [
-        ("file rỗng", "empty.yaml", "", "application/x-yaml", 422, "EMPTY_FILE"),
+        ("file rá»—ng", "empty.yaml", "", "application/x-yaml", 422, "EMPTY_FILE"),
         ("sai đuôi file (.txt)", "catalog.txt", YAML_TOI_THIEU, "text/plain",
          422, "INVALID_FILE_TYPE"),
         ("file quá lớn (>1MiB)", "huge.yaml", "#" + "a" * (MAX_UPLOAD_BYTES + 1),
@@ -462,7 +462,7 @@ def kiem_layer3_4(api: Api, rp: Report) -> None:
     rp.check("C-broken-syntax.catalog.yaml -> YAML_SYNTAX, đúng 1 lỗi",
              got_http == 422 and body.get("code") == "YAML_SYNTAX"
              and len(body.get("issues", [])) == 1,
-             f"{got_http} {body.get('code')} / {len(body.get('issues', []))} lỗi")
+             f"{got_http} {body.get('code')} / {len(body.get('issues', []))} lá»—i")
 
 
 def kiem_layer5(api: Api, db: Db, rp: Report) -> None:
@@ -487,7 +487,7 @@ def kiem_layer5(api: Api, db: Db, rp: Report) -> None:
     rp.check("B-missing-required -> 422 với đúng 5 lỗi REQUIRED",
              got_http == 422 and len(loi) == 5
              and all(i["code"] == "REQUIRED" for i in loi),
-             f"{got_http}, {len(loi)} lỗi: {sorted({i['code'] for i in loi})}")
+             f"{got_http}, {len(loi)} lá»—i: {sorted({i['code'] for i in loi})}")
 
     rp.check("file lỗi KHÔNG để lại gì trong database",
              db.dong("A-invalid-fields.catalog.yaml") is None
@@ -717,3 +717,5 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+

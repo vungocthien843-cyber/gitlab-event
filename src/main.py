@@ -11,9 +11,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.core.config import LOG_LEVEL
-from app.core.db import dispose, init_db
-from app.core.errors import (
+from src.core.config import LOG_LEVEL
+from src.core.db import dispose, init_db
+from src.core.errors import (
     AppError,
     CriticalError,
     ErrorCode,
@@ -23,9 +23,9 @@ from app.core.errors import (
     Status,
     ValidationError,
 )
-from app.core.logging import configure_logging, get_request_id, new_request_id, set_request_id
-from app.models.schemas import ApiResponse, Issue, from_error
-from app.services.store import store
+from src.core.logging import configure_logging, get_request_id, new_request_id, set_request_id
+from src.models.schemas import ApiResponse, Issue, from_error
+from src.services.store import store
 
 from src.api.routes import router
 from src.config import get_settings

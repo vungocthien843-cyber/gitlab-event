@@ -21,9 +21,9 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.core.db import session_scope
-from app.core.errors import CriticalError, ErrorCode, Stage
-from app.models.tables import InputJson
+from src.core.db import session_scope
+from src.core.errors import CriticalError, ErrorCode, Stage
+from src.models.tables import InputJson
 
 logger = logging.getLogger(__name__)
 
@@ -141,3 +141,4 @@ def all_documents() -> list[tuple[int, dict[str, Any]]]:
 def count() -> int:
     with _storage_guard("count"), session_scope() as session:
         return session.scalar(select(func.count()).select_from(InputJson)) or 0
+

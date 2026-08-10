@@ -31,6 +31,18 @@ class Settings(BaseSettings):
     # Vector Store
     chroma_persist_dir: str = "./data/chroma"
 
+    # GitHub webhook
+    # Rỗng = chưa cấu hình. Không có giá trị mặc định nào khác được: một secret
+    # mặc định nghĩa là ai cũng ký được request giả.
+    webhook_secret: str = ""
+    # Rỗng thì gọi GitHub API ẩn danh — repo public vẫn đọc được, chỉ bị giới hạn
+    # rate thấp hơn. Repo private thì bắt buộc phải có.
+    github_token: str = ""
+    github_api_timeout_seconds: int = 10
+    # Một lần đổi tên thư mục có thể chạm hàng trăm file YAML. Không chặn thì
+    # một request webhook sẽ bắn hàng trăm lệnh gọi API GitHub và treo tới timeout.
+    github_max_files_per_push: int = 50
+
 
 @lru_cache
 def get_settings() -> Settings:

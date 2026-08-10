@@ -26,9 +26,9 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 from typing import Any
 
-from app.models.schemas import CatalogSummary
-from app.services import catalog_repository
-from app.services.catalog_to_graph import Diagnostics, Issue, ParsedFile
+from src.models.schemas import CatalogSummary
+from src.services import catalog_repository
+from src.services.catalog_to_graph import Diagnostics, Issue, ParsedFile
 
 logger = logging.getLogger(__name__)
 
@@ -237,3 +237,4 @@ class CatalogStore:
 
 
 store = CatalogStore()
+

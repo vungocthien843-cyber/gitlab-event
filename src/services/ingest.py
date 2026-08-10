@@ -2,7 +2,7 @@
 ingest.py — Điều phối luồng nạp một catalog, sau khi input đã sạch.
 
     validate (5 tầng)  ->  kiểm tra xung đột xuyên file  ->  lưu DB  ->  cập nhật cache
-                                                                     ->  dựng response
+                                                                     ->  dá»±ng response
 
 Đây là tầng DUY NHẤT biết thứ tự các bước. Controller không biết, validator
 không biết. Muốn chèn thêm một bước (gọi LLM, bắn event) thì thêm đúng ở đây,
@@ -23,20 +23,20 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 from typing import Any
 
-from app.core.errors import (
+from src.core.errors import (
     CriticalError,
     ErrorCode,
     HumanReviewRequiredError,
     Stage,
     ValidationError,
 )
-from app.models import schemas
-from app.models.schemas import ApiResponse, Issue
-from app.services import catalog_repository
-from app.services.catalog_merge import merge_documents
-from app.services.catalog_to_graph import ParsedFile
-from app.services.store import StoredCatalog, output_name, store
-from app.services.validation import run_validation_pipeline
+from src.models import schemas
+from src.models.schemas import ApiResponse, Issue
+from src.services import catalog_repository
+from src.services.catalog_merge import merge_documents
+from src.services.catalog_to_graph import ParsedFile
+from src.services.store import StoredCatalog, output_name, store
+from src.services.validation import run_validation_pipeline
 
 logger = logging.getLogger(__name__)
 
@@ -319,3 +319,4 @@ def delete_catalog(filename: str, request_id: str) -> ApiResponse:
         stage=Stage.DONE,
         details={"file": filename, "remaining": len(store)},
     )
+

@@ -19,7 +19,7 @@ from typing import Any
 
 import networkx as nx
 
-from app.services.catalog_to_graph import (
+from src.services.catalog_to_graph import (
     OWNED_VIA_RELATION,
     SCHEMA_VERSION,
     SPEC_VERSION,
@@ -131,3 +131,4 @@ def merge_documents(parsed: list[ParsedFile]) -> dict[str, Any]:
         "edges": ordered_edges,
         "diagnostics": d.as_dict(),
     }
+
