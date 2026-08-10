@@ -52,6 +52,7 @@ def ingest_catalog(
     content: bytes,
     content_type: str | None,
     request_id: str,
+    force: bool = False,
 ) -> ApiResponse:
     """Nạp 1 catalog. Raise AppError nếu không thể hoàn tất."""
 
@@ -66,7 +67,8 @@ def ingest_catalog(
     )
 
     # ── Bước 2: xung đột với các file đã nạp trước đó ────────────────────────
-    _check_cross_file_conflicts(parsed, validated.filename)
+    if not force:
+        _check_cross_file_conflicts(parsed, validated.filename)
 
     # ── Bước 3: lưu JSON vào database ────────────────────────────────────────
     record_id, replaced = _save_graph_document(parsed)

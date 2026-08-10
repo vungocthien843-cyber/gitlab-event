@@ -386,7 +386,7 @@ async def handle_push(event: PushEvent, request_id: str) -> ApiResponse:
 
         try:
             result = await run_in_threadpool(
-                ingest.ingest_catalog, name, content, _YAML_CONTENT_TYPE, request_id
+                ingest.ingest_catalog, name, content, _YAML_CONTENT_TYPE, request_id, True
             )
         except CriticalError:
             raise

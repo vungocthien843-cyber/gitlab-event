@@ -48,7 +48,10 @@ router = APIRouter(prefix="/catalogs", tags=["Catalogs"])
         500: {"description": "Lỗi hệ thống (severity=critical)"},
     },
 )
-async def upload_catalog(file: UploadFile = File(...)) -> ApiResponse:
+async def upload_catalog(
+    file: UploadFile = File(...),
+    force: bool = Query(default=False, description="Ép ghi đè nếu có tranh chấp quyền sở hữu")
+) -> ApiResponse:
     """Nhận file, chạy 5 tầng validate, sinh graph JSON và lưu vào bảng `input_json`.
 
     Chỉ file qua được TOÀN BỘ validate mới được lưu. Bản cũ ghi file JSON ngay
@@ -67,6 +70,7 @@ async def upload_catalog(file: UploadFile = File(...)) -> ApiResponse:
         content=content,
         content_type=file.content_type,
         request_id=get_request_id(),
+        force=force,
     )
 
 
