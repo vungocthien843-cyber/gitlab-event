@@ -1,29 +1,27 @@
 specVersion: vsf-idp.io/v2
 
 metadata:
-  domain: Notification
+domain: Notification
   system: notification
   namespace: notify
-
-spec:
-  type: worker
+spec:type: worker
   id: email-worker
   name: Email Worker
   description: >
     Worker xu ly bat dong bo viec gui email thong bao giao dich,
     OTP va canh bao bao mat cho khach hang.
 
-  owners:
+owners:
     members:
       - user: v.trangdt4@corp.tech
         role: techlead
       - user: v.namph2@corp.tech
         role: member
 
-  review:
+review:
     branch: "main"
 
-  topology:
+topology:
     - ref: system:notify/notification
       reason: Worker thuoc system notification
 
@@ -47,3 +45,4 @@ spec:
 
     - ref: component:notify/template-engine
       reason: Render email template tu Handlebars
+ehjgfewiewgegewgưegegưgew
