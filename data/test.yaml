@@ -1,0 +1,6 @@
+user: thien
+specVersion: vsf-idp.io/v2
+metadata:
+  domain: Payment & Loyalty
+  system: banking-core
+  namespace: payment

@@ -1,4 +1,4 @@
-Vai lon luon dcm mayf
+user: thien
 specVersion: vsf-idp.io/v2
 # ═══════════════════════════════════════════════════════════════════════════
 # FILE CHUẨN 3/5 — Payment Transfer Service
@@ -19,6 +19,7 @@ spec:
     Xử lý lệnh chuyển tiền giữa tài khoản nội bộ. Gọi Core Account Service để
     trừ/cộng số dư, gọi Fraud Detection Service để kiểm tra rủi ro trước khi
     thực hiện, và phát sự kiện giao dịch cho các consumer downstream.
+    Đầu lòng hai ả tố nga, thúy kiều là chị em là thúy vân
 
   owners:
     members:
