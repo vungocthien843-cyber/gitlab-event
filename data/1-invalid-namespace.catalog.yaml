@@ -1,0 +1,41 @@
+specVersion: vsf-idp.io/v2
+# ═══════════════════════════════════════════════════════════════════════════
+# FILE 1 — LỖI DUY NHẤT: namespace sai định dạng (có chữ hoa)
+# Kỳ vọng: INVALID_FORMAT tại metadata.namespace
+# Mọi thứ khác HỢP LỆ. Đây là lỗi tầng 2 (định dạng trường).
+# ═══════════════════════════════════════════════════════════════════════════
+
+metadata:
+  domain: Core Banking
+  system: banking-core
+  namespace: Account-Service     # <-- SAI: chữ hoa. Phải là ^[a-z][a-z0-9-]*$
+
+spec:
+  type: service
+  id: core-account-service
+  name: Core Account Service
+  description: Quản lý vòng đời tài khoản, số dư và sổ cái nội bộ của ngân hàng.
+
+  owners:
+    members:
+      - user: v.anhpq8@vinsmartfuture.tech
+        role: techlead
+      - user: v.duchm4@vinsmartfuture.tech
+        role: maintainer
+
+  review:
+    branch: "main"
+
+  topology:
+    - ref: system:banking/banking-core
+      reason: Component này thuộc system banking-core
+    - ref: providesApis:account/core-account-service
+      protocol: REST
+      reason: Expose endpoint /accounts, /accounts/{id}/balance
+    - ref: resource:account/account-postgres
+      reason: Datastore chính lưu số dư và sổ cái
+    - ref: resource:platform/kafka
+      reason: Message broker dùng chung toàn platform
+    - ref: publishesTo:account/account.balance-changed
+      protocol: Kafka
+      reason: Phát sự kiện khi số dư tài khoản thay đổi

@@ -1,0 +1,45 @@
+specVersion: vsf-idp.io/v2
+# ═══════════════════════════════════════════════════════════════════════════
+# FILE 2 — LỖI DUY NHẤT: owners không có ai role techlead
+# Kỳ vọng: MISSING_TECHLEAD tại spec.owners.members
+# Có 2 member nhưng cả hai đều maintainer/member. Đây là lỗi tầng 4.
+# ═══════════════════════════════════════════════════════════════════════════
+
+metadata:
+  domain: Payment & Loyalty
+  system: banking-core
+  namespace: payment
+
+spec:
+  type: service
+  id: payment-transfer-service
+  name: Payment Transfer Service
+  description: Xử lý lệnh chuyển tiền giữa các tài khoản nội bộ ngân hàng.
+
+  owners:
+    members:
+      # SAI: không có techlead nào. Phải có ít nhất 1.
+      - user: v.hoangnv12@vinsmartfuture.tech
+        role: maintainer
+      - user: v.thuyntt5@vinsmartfuture.tech
+        role: member
+
+  review:
+    branch: "main"
+
+  topology:
+    - ref: system:banking/banking-core
+      reason: Component này thuộc system banking-core
+    - ref: providesApis:payment/payment-transfer-service
+      protocol: REST
+      reason: Expose endpoint /transfer, /transfer/{id}/status
+    - ref: consumesApis:account/core-account-service
+      protocol: REST
+      reason: Trừ/cộng số dư tài khoản nguồn và đích
+    - ref: resource:payment/payment-postgres
+      reason: Datastore lưu trạng thái giao dịch
+    - ref: resource:platform/kafka
+      reason: Message broker dùng chung toàn platform
+    - ref: publishesTo:audit/audit.transaction-log
+      protocol: Kafka
+      reason: Ghi log audit mọi giao dịch theo Thông tư 50/2024/TT-NHNN

@@ -1,0 +1,48 @@
+specVersion: vsf-idp.io/v2
+# ═══════════════════════════════════════════════════════════════════════════
+# FILE CHUẨN 5/5 — Notification Worker
+# Background worker gửi thông báo cho khách hàng khi có giao dịch.
+# type: worker (KHÔNG có API surface) — form mẫu khác hẳn 4 file trên.
+# Chỉ consume event, không expose API, không publish. Đơn giản nhất trong bộ.
+# ═══════════════════════════════════════════════════════════════════════════
+
+metadata:
+  domain: Notification
+  system: banking-core
+  namespace: notification
+
+spec:
+  type: worker
+  id: notification-worker
+  name: Notification Worker
+  description: >-
+    Consumer nền, nghe sự kiện giao dịch và số dư thay đổi, sau đó đẩy SMS/push
+    thông báo cho khách hàng. Không expose API ra ngoài.
+
+  owners:
+    members:
+      - user: v.hangnt10@vinsmartfuture.tech
+        role: techlead
+      - user: v.namdv3@vinsmartfuture.tech
+        role: maintainer
+
+  review:
+    branch: "main"
+
+  topology:
+    - ref: system:banking/banking-core
+      reason: Component này thuộc system banking-core
+
+    - ref: resource:notification/notification-postgres
+      reason: Lưu lịch sử gửi và trạng thái delivery của từng thông báo
+
+    - ref: resource:platform/kafka
+      reason: Message broker dùng chung toàn platform
+
+    - ref: consumesFrom:payment/payment.transfer-events
+      protocol: Kafka
+      reason: Nghe sự kiện giao dịch để gửi thông báo cho khách hàng
+
+    - ref: consumesFrom:account/account.balance-changed
+      protocol: Kafka
+      reason: Nghe sự kiện số dư thay đổi để thông báo biến động số dư
