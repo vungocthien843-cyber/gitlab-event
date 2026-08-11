@@ -5,7 +5,7 @@ import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -67,6 +67,23 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["X-Request-ID"],
 )
+
+# 1. Xử lý đường dẫn gốc (Bỏ lỗi GET /)
+@app.get("/", tags=["Trang chủ"])
+async def root():
+    return {
+        "status": "success",
+        "message": "Hệ thống Webhook API đang hoạt động bình thường!"
+    }
+
+# 2. Xử lý trình duyệt xin logo (Bỏ lỗi GET /favicon.ico và /favicon.png)
+@app.get("/favicon.ico", include_in_schema=False)
+async def favicon_ico():
+    return Response(status_code=204)
+
+@app.get("/favicon.png", include_in_schema=False)
+async def favicon_png():
+    return Response(status_code=204)
 
 # Nhúng toàn bộ route từ src/api/routes.py vào tiền tố /api/v1
 app.include_router(router, prefix="/api/v1")
