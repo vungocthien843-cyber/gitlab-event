@@ -43,7 +43,6 @@ class Settings(BaseSettings):
     # một request webhook sẽ bắn hàng trăm lệnh gọi API GitHub và treo tới timeout.
     github_max_files_per_push: int = 50
 
-
 @lru_cache
 def get_settings() -> Settings:
     return Settings()

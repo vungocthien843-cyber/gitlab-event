@@ -18,14 +18,12 @@ from fastapi import (
     status,
 )
 
+from src.agents.graph import agent
 from src.core.logging import get_request_id
 from src.models import schemas
-from src.models.schemas import ApiResponse
-from src.services import ingest
+from src.models.schemas import ApiResponse, ChatRequest, ChatResponse
+from src.services import github_events, ingest
 from src.services.validation import read_upload_within_limit
-from src.agents.graph import agent
-from src.models.schemas import ChatRequest, ChatResponse
-from src.services import github_events
 
 # Không gọi load_dotenv() ở đây: app/core/config.py đã nạp .env lúc import (và
 # nạp theo đường dẫn tuyệt đối, nên chạy uvicorn từ thư mục nào cũng đúng).
@@ -155,10 +153,12 @@ async def github_webhook_handler(
     x_github_event: str = Header(None),
     x_hub_signature_256: str = Header(None),
 ) -> ApiResponse:
-    """Push lên GitHub -> ghi nhật ký + tự nạp/xoá catalog tương ứng.
+    """Push lên GitHub -> băm + ghi nhật ký, rồi tự nạp/xoá catalog tương ứng.
 
-    File `added`/`modified` được tải về và đẩy qua đúng pipeline validate 5 tầng
-    của `POST /catalogs`; file `removed` thì gọi `delete_catalog`. Toàn bộ thứ tự
+    File `added`/`modified` được tải về, băm SHA-256 và ghi vào bảng
+    `github_files_{added,modified}`, rồi đẩy qua đúng pipeline validate 5 tầng
+    của `POST /catalogs`; file `removed` được băm (nội dung tại commit trước đó)
+    và ghi vào `github_files_removed`, rồi gọi `delete_catalog`. Toàn bộ thứ tự
     các bước nằm ở `src/services/github_events.py`, controller chỉ bóc header ra
     và gọi service.
 
@@ -189,4 +189,3 @@ async def github_webhook_handler(
         )
 
     return await github_events.handle_push(event, request_id=get_request_id())
-

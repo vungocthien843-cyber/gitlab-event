@@ -1,12 +1,12 @@
 """
 github_events.py — Xử lý sự kiện push từ GitHub.
 
-    xác thực chữ ký  ->  bóc tách payload  ->  ghi nhật ký DB
+    xác thực chữ ký  ->  bóc tách payload  ->  băm + ghi nhật ký từng file
                                             ->  xoá catalog của file bị removed
                                             ->  nạp catalog của file added/modified
-                                            ->  dá»±ng response
+                                            ->  dựng response
 
-Đây là tầng DUY NHẤT biết thứ tự các bước, đúng vai trò `app/services/ingest.py`
+Đây là tầng DUY NHẤT biết thứ tự các bước, đúng vai trò `src/services/ingest.py`
 giữ cho luồng upload thủ công. Controller (`src/api/routes.py`) không biết gì về
 hình dạng payload của GitHub, và `ingest` không biết là nó đang được gọi từ một
 webhook hay từ một form upload.
@@ -37,6 +37,7 @@ from urllib.parse import quote
 import httpx
 from starlette.concurrency import run_in_threadpool
 
+from src.config import get_settings
 from src.core.config import ALLOWED_EXTENSIONS
 from src.core.errors import (
     AppError,
@@ -47,12 +48,12 @@ from src.core.errors import (
 )
 from src.models import schemas
 from src.models.schemas import ApiResponse, Issue
-from src.services import github_event_repository, ingest
-from src.config import get_settings
+from src.services import github_file_repository, ingest
 
 logger = logging.getLogger(__name__)
 
 GITHUB_API_BASE = "https://api.github.com"
+GITHUB_WEB_BASE = "https://github.com"
 
 # GitHub gửi tên nhánh dưới dạng `refs/heads/main`. Tag là `refs/tags/v1.0`.
 _BRANCH_PREFIX = "refs/heads/"
@@ -60,6 +61,10 @@ _BRANCH_PREFIX = "refs/heads/"
 # Content-Type khai với `ingest`: layer 2 chỉ dùng nó để CẢNH BÁO khi lệch, không
 # để chặn, nên khai đúng loại thật là đủ.
 _YAML_CONTENT_TYPE = "application/x-yaml"
+
+# GitHub dùng SHA toàn số 0 làm `before` khi push tạo nhánh mới (không có commit
+# cha nào để so sánh). Không có gì để tải ở SHA này — coi như không có.
+_ZERO_SHA = "0" * 40
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -84,6 +89,9 @@ class PushEvent:
     added_files: list[str]
     modified_files: list[str]
     removed_files: list[str]
+    # SHA của ref TRƯỚC lần push này — chỗ duy nhất còn thấy nội dung cũ của một
+    # file vừa bị xoá. Rỗng hoặc toàn số 0 nghĩa là "không có, đừng tra".
+    before_sha: str = ""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -231,6 +239,7 @@ def parse_push_payload(payload: dict[str, Any]) -> PushEvent | None:
         added_files=added,
         modified_files=modified,
         removed_files=removed,
+        before_sha=payload.get("before") or "",
     )
 
 
@@ -286,6 +295,16 @@ async def _fetch_file(repo_full_name: str, ref: str, path: str) -> bytes | None:
     return response.content
 
 
+def _blob_url(repo_full_name: str, ref: str, path: str) -> str:
+    """Link bấm thẳng sang nội dung file trên GitHub tại đúng commit `ref`.
+
+    Dùng SHA cụ thể chứ không tên nhánh, cùng lý do với `_fetch_file`: link phải
+    trỏ đúng phiên bản đã băm, không phải bất cứ thứ gì đang nằm trên đầu nhánh
+    tại thời điểm người xem bấm vào.
+    """
+    return f"{GITHUB_WEB_BASE}/{repo_full_name}/blob/{ref}/{quote(path)}"
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Bước 4 — điều phối
 # ─────────────────────────────────────────────────────────────────────────────
@@ -301,6 +320,29 @@ def _issue_from(exc: AppError, path: str) -> Issue:
     )
 
 
+async def _record_hash(
+    *,
+    status: github_file_repository.FileStatus,
+    content: bytes,
+    event: PushEvent,
+    path: str,
+    ref: str,
+) -> None:
+    """Băm nội dung và ghi 1 dòng vào bảng `github_files_{status}`."""
+    file_hash = hashlib.sha256(content).hexdigest()
+    await run_in_threadpool(
+        github_file_repository.record_file_event,
+        status=status,
+        file_hash=file_hash,
+        email=event.email,
+        branch=event.branch,
+        commit_url=event.commit_url,
+        event_time=event.timestamp,
+        file_name=path,
+        url=_blob_url(event.repo_full_name, ref, path),
+    )
+
+
 async def handle_push(event: PushEvent, request_id: str) -> ApiResponse:
     """Chạy trọn một lần push. Trả về `ApiResponse` đúng contract chung.
 
@@ -311,31 +353,47 @@ async def handle_push(event: PushEvent, request_id: str) -> ApiResponse:
     """
     settings = get_settings()
 
-    # ── Bước 1: ghi nhật ký TRƯỚC khi xử lý ──────────────────────────────────
-    # Lần push này ĐÃ XẢY RA, bất kể ingest phía sau có thành công hay không.
-    # Ghi sau sẽ mất bản ghi của đúng những lần push hỏng — thứ cần điều tra nhất.
-    log_id = await run_in_threadpool(
-        github_event_repository.save_commit_event,
-        email=event.email,
-        branch=event.branch,
-        commit_url=event.commit_url,
-        timestamp=event.timestamp,
-        added_files=event.added_files,
-        modified_files=event.modified_files,
-        removed_files=event.removed_files,
-    )
-
     issues: list[Issue] = []
     ingested: list[str] = []
     deleted: list[str] = []
     skipped: list[str] = []
     failed: list[str] = []
+    hashed: list[str] = []
 
-    # ── Bước 2: xoá catalog của các file đã bị removed ───────────────────────
+    # ── Bước 1: xoá catalog của các file đã bị removed ───────────────────────
     # Xoá trước khi nạp: nếu một push vừa xoá 'a.yaml' vừa thêm 'b.yaml' khai
     # cùng một node, làm ngược thứ tự sẽ dựng ra tranh chấp quyền sở hữu giả.
+    #
+    # Băm TRƯỚC khi xoá, và băm nội dung tại commit `before` — file không còn
+    # tồn tại ở `commit_id` nên không có gì để tải ở đó nữa.
     for path in event.removed_files:
         name = posixpath.basename(path)
+
+        if event.before_sha and event.before_sha != _ZERO_SHA:
+            old_content = await _fetch_file(event.repo_full_name, event.before_sha, path)
+            if old_content is not None:
+                await _record_hash(
+                    status="removed",
+                    content=old_content,
+                    event=event,
+                    path=path,
+                    ref=event.before_sha,
+                )
+                hashed.append(path)
+            else:
+                # File thêm rồi xoá ngay trong cùng lần push, hoặc push đầu tiên
+                # của nhánh — không có nội dung "trước đó" nào để băm. Vẫn xoá
+                # catalog bình thường, chỉ là không ghi được dòng mã băm.
+                logger.info(
+                    "Không lấy được nội dung cũ của '%s' tại before=%s — bỏ qua ghi mã băm.",
+                    path, event.before_sha,
+                )
+        else:
+            logger.info(
+                "Push không có before hợp lệ (nhánh mới) — bỏ qua ghi mã băm cho '%s'.",
+                path,
+            )
+
         try:
             await run_in_threadpool(ingest.delete_catalog, name, request_id)
         except CriticalError:
@@ -353,8 +411,11 @@ async def handle_push(event: PushEvent, request_id: str) -> ApiResponse:
         else:
             deleted.append(name)
 
-    # ── Bước 3: nạp catalog của các file added + modified ────────────────────
-    targets = [*event.added_files, *event.modified_files]
+    # ── Bước 2: nạp catalog của các file added + modified ────────────────────
+    targets: list[tuple[str, github_file_repository.FileStatus]] = [
+        *((path, "added") for path in event.added_files),
+        *((path, "modified") for path in event.modified_files),
+    ]
     if len(targets) > settings.github_max_files_per_push:
         skipped_count = len(targets) - settings.github_max_files_per_push
         issues.append(
@@ -368,7 +429,7 @@ async def handle_push(event: PushEvent, request_id: str) -> ApiResponse:
         )
         targets = targets[: settings.github_max_files_per_push]
 
-    for path in targets:
+    for path, status in targets:
         name = posixpath.basename(path)
 
         content = await _fetch_file(event.repo_full_name, event.commit_id, path)
@@ -383,6 +444,13 @@ async def handle_push(event: PushEvent, request_id: str) -> ApiResponse:
                 )
             )
             continue
+
+        # Ghi mã băm TRƯỚC khi nạp: dù ingest sau đó cảnh báo hay lỗi, mã băm
+        # của đúng nội dung vừa push vẫn được lưu lại.
+        await _record_hash(
+            status=status, content=content, event=event, path=path, ref=event.commit_id
+        )
+        hashed.append(path)
 
         try:
             result = await run_in_threadpool(
@@ -399,14 +467,14 @@ async def handle_push(event: PushEvent, request_id: str) -> ApiResponse:
             # dựng sẵn thành Issue — chuyển tiếp nguyên vẹn thay vì nuốt mất.
             issues.extend(result.issues)
 
-    # ── Bước 4: dựng response ────────────────────────────────────────────────
+    # ── Bước 3: dựng response ────────────────────────────────────────────────
     details: dict[str, Any] = {
-        "log_id": log_id,
         "repository": event.repo_full_name,
         "branch": event.branch,
         "email": event.email,
         "commit_id": event.commit_id,
         "commit_url": event.commit_url,
+        "hashed": hashed,
         "ingested": ingested,
         "deleted": deleted,
         "skipped": skipped,
@@ -414,25 +482,24 @@ async def handle_push(event: PushEvent, request_id: str) -> ApiResponse:
     }
 
     summary = (
-        f"Push lên nhánh '{event.branch}': nạp {len(ingested)} file, "
-        f"xoá {len(deleted)} file"
+        f"Push lên nhánh '{event.branch}': băm {len(hashed)} file, "
+        f"nạp {len(ingested)} file, xoá {len(deleted)} file"
     )
     if failed:
-        summary += f", {len(failed)} file lá»—i"
+        summary += f", {len(failed)} file lỗi"
     summary += "."
 
     if not issues:
         logger.info(
-            "Webhook xử lý xong push '%s' (log_id=%d): nạp %d, xoá %d",
-            event.commit_id, log_id, len(ingested), len(deleted),
+            "Webhook xử lý xong push '%s': băm %d, nạp %d, xoá %d",
+            event.commit_id, len(hashed), len(ingested), len(deleted),
         )
         return schemas.success(summary, request_id=request_id, details=details)
 
     logger.warning(
-        "Webhook xử lý push '%s' (log_id=%d) kèm %d vấn đề: %s",
-        event.commit_id, log_id, len(issues), [i.code for i in issues],
+        "Webhook xử lý push '%s' kèm %d vấn đề: %s",
+        event.commit_id, len(issues), [i.code for i in issues],
     )
     return schemas.warning(
         summary, request_id=request_id, issues=issues, details=details
     )
-

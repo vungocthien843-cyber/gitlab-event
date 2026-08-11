@@ -48,51 +48,67 @@ class InputJson(Base):
         return f"<InputJson id={self.id}>"
 
 
-class GithubCommitLog(Base):
-    """Bảng `github_commits_log` — mỗi dòng là MỘT lần push lên GitHub.
+class GithubFileEventMixin:
+    """Cột dùng chung cho 3 bảng `github_files_{added,modified,removed}`.
 
-    Đây là NHẬT KÝ AUDIT, không phải nguồn sự thật của catalog. Nguồn sự thật
-    vẫn là `input_json`; bảng này trả lời câu hỏi mà `input_json` không giữ:
-    "catalog đó vào hệ thống từ commit nào, ai đẩy lên, lúc nào".
+    Không kế thừa `Base` — đây chỉ là mixin, mỗi bảng con tự khai `__tablename__`
+    riêng để ra 3 bảng vật lý khác nhau thay vì 1 bảng chung.
 
-        id              BIGSERIAL  khoá chính tự tăng
-        email           VARCHAR    email tác giả của head_commit
-        branch          VARCHAR    'main' (đã bỏ tiền tố refs/heads/)
-        commit_url      VARCHAR    link bấm thẳng sang trang diff của GitHub
-        timestamp       VARCHAR    ISO8601 nguyên văn GitHub gửi sang
-        added_files     JSONB      danh sách đường dẫn file .yaml/.yml
-        modified_files  JSONB
-        removed_files   JSONB
-
-    LUÔN INSERT, không bao giờ UPDATE — ngược hẳn với `InputJson`. Một lần push
-    là một sự kiện ĐÃ XẢY RA, ghi đè lên nó là xoá mất lịch sử. Còn `input_json`
-    mô tả trạng thái HIỆN TẠI nên upload lại cùng tên file thì phải ghi đè.
-
-    Ba cột JSONB lưu ĐƯỜNG DẪN ĐẦY ĐỦ trong repo
-    ('services/order/catalog-info.yaml') chứ không phải tên file rút gọn: mục
-    đích của bảng là truy ngược về đúng chỗ trong repo. Tên rút gọn chỉ dùng khi
-    gọi sang `ingest`, và việc quy đổi đó nằm ở tầng service.
-
-    Lưu `timestamp` dạng chuỗi chứ không TIMESTAMPTZ: đây là chuỗi GitHub gửi
-    sang, giữ nguyên văn thì log luôn khớp với thứ nhìn thấy trên GitHub, không
-    phụ thuộc vào việc ta parse timezone có đúng hay không.
+    LUÔN INSERT, không bao giờ UPDATE/DELETE: mỗi dòng là một lần file đó xuất
+    hiện trong một push, không phải trạng thái hiện tại của file (trạng thái
+    hiện tại của catalog vẫn nằm ở `InputJson`). Sửa cùng một file nhiều lần thì
+    ra nhiều dòng — nhờ vậy giữ được lịch sử mã băm qua thời gian, không chỉ bản
+    mới nhất.
     """
 
-    __tablename__ = "github_commits_log"
-
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    # Mã băm SHA-256 (64 ký tự hex) của nội dung file tại đúng commit liên quan.
+    file_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     email: Mapped[str] = mapped_column(String, nullable=False)
     branch: Mapped[str] = mapped_column(String, nullable=False)
     commit_url: Mapped[str] = mapped_column(String, nullable=False)
-    timestamp: Mapped[str] = mapped_column(String, nullable=False)
+    # Chuỗi ISO8601 GitHub gửi sang, giữ nguyên văn — cùng lý do với
+    # `GithubCommitLog.timestamp` trước đây: không phụ thuộc việc ta parse
+    # timezone có đúng hay không.
+    event_time: Mapped[str] = mapped_column(String, nullable=False)
+    # Đường dẫn đầy đủ trong repo ('services/order/catalog-info.yaml'), không
+    # phải tên rút gọn — mục đích của bảng là truy ngược về đúng chỗ trong repo.
+    file_name: Mapped[str] = mapped_column(String, nullable=False)
+    # Link bấm thẳng sang file trên GitHub tại đúng commit (blob permalink).
+    url: Mapped[str] = mapped_column(String, nullable=False)
 
-    # `default=list` là default phía Python, KHÔNG phải server default: INSERT
-    # bằng SQL tay mà bỏ trống ba cột này sẽ vi phạm NOT NULL. Luôn ghi qua
-    # `github_event_repository`.
-    added_files: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
-    modified_files: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
-    removed_files: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+
+class GithubFileAdded(GithubFileEventMixin, Base):
+    """Bảng `github_files_added` — mỗi dòng là MỘT file `.yaml`/`.yml` mới xuất
+    hiện trong một lần push."""
+
+    __tablename__ = "github_files_added"
 
     def __repr__(self) -> str:  # pragma: no cover - chỉ để debug
-        return f"<GithubCommitLog id={self.id} branch={self.branch}>"
+        return f"<GithubFileAdded id={self.id} file={self.file_name}>"
+
+
+class GithubFileModified(GithubFileEventMixin, Base):
+    """Bảng `github_files_modified` — mỗi dòng là MỘT file `.yaml`/`.yml` bị
+    sửa nội dung trong một lần push."""
+
+    __tablename__ = "github_files_modified"
+
+    def __repr__(self) -> str:  # pragma: no cover - chỉ để debug
+        return f"<GithubFileModified id={self.id} file={self.file_name}>"
+
+
+class GithubFileRemoved(GithubFileEventMixin, Base):
+    """Bảng `github_files_removed` — mỗi dòng là MỘT file `.yaml`/`.yml` bị xoá
+    khỏi repo trong một lần push.
+
+    `file_hash` ở đây là mã băm của nội dung file NGAY TRƯỚC KHI bị xoá (lấy tại
+    commit `before` của push), không phải nội dung hiện tại — file đã không còn
+    tồn tại ở commit mới nhất nên không có gì để băm ở đó.
+    """
+
+    __tablename__ = "github_files_removed"
+
+    def __repr__(self) -> str:  # pragma: no cover - chỉ để debug
+        return f"<GithubFileRemoved id={self.id} file={self.file_name}>"
 
