@@ -32,10 +32,10 @@ from src.core.errors import (
 )
 from src.models import schemas
 from src.models.schemas import ApiResponse, Issue
-from src.services import catalog_repository
+from src.repositories import catalog_repository
 from src.services.catalog_merge import merge_documents
 from src.services.catalog_to_graph import ParsedFile
-from src.services.store import StoredCatalog, output_name, store
+from src.core.store import StoredCatalog, output_name, store
 from src.services.validation import run_validation_pipeline
 
 logger = logging.getLogger(__name__)

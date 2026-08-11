@@ -25,10 +25,10 @@ from src.core.errors import (
 )
 from src.core.logging import configure_logging, get_request_id, new_request_id, set_request_id
 from src.models.schemas import ApiResponse, Issue, from_error
-from src.services.store import store
+from src.core.store import store
 
 from src.api.routes import router
-from src.config import get_settings
+from src.core.config import get_settings
 
 configure_logging(LOG_LEVEL)
 logger = logging.getLogger("app")

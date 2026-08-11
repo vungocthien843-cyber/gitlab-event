@@ -27,7 +27,7 @@ from zoneinfo import ZoneInfo
 from typing import Any
 
 from src.models.schemas import CatalogSummary
-from src.services import catalog_repository
+from src.repositories import catalog_repository
 from src.services.catalog_to_graph import Diagnostics, Issue, ParsedFile
 
 logger = logging.getLogger(__name__)

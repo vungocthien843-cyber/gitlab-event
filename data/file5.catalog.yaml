@@ -1,0 +1,32 @@
+specVersion: vsf-idp.io/v2
+
+metadata:
+  domain: Platform Engineering
+  system: idp-core
+  namespace: idp
+
+spec:
+  type: library
+  id: idp-sdk-java
+  name: IDP SDK Java
+  description: >
+    Thu vien Java dung chung cho cac service trong platform.
+    Cung cap utility cho logging, tracing, error handling va
+    catalog client.
+
+  owners:
+    members:
+      - user: v.daonq2@corp.tech
+        role: techlead
+      - user: v.kiennd17@corp.tech
+        role: maintainer
+
+  review:
+    branch: "main"
+
+  topology:
+    - ref: system:idp/idp-core
+      reason: Library thuoc system idp-core
+
+    - ref: component:idp/idp-core-admin
+      reason: Goi REST API cua admin de dang ky catalog tu dong

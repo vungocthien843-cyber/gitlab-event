@@ -37,7 +37,7 @@ from urllib.parse import quote
 import httpx
 from starlette.concurrency import run_in_threadpool
 
-from src.config import get_settings
+from src.core.config import get_settings
 from src.core.config import ALLOWED_EXTENSIONS
 from src.core.errors import (
     AppError,
@@ -48,7 +48,8 @@ from src.core.errors import (
 )
 from src.models import schemas
 from src.models.schemas import ApiResponse, Issue
-from src.services import github_file_repository, ingest
+from src.repositories import github_file_repository
+from src.services import ingest
 
 logger = logging.getLogger(__name__)
 
