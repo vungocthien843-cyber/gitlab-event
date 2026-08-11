@@ -6,12 +6,12 @@ specVersion: vsf-idp.io/v2
 # đồng bộ (không nghe event, tránh phụ thuộc vòng với payment).
 # ═══════════════════════════════════════════════════════════════════════════
 
-metadata
+metadata:
   domain: Risk & Fraud
   system: banking-core
   namespace: risk
 
-spec
+spec:
   type: service
   id: fraud-detection-service
   name: Fraud Detection Service
