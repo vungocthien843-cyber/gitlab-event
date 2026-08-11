@@ -5,10 +5,10 @@ specVersion: vsf-idp.io/v2
 # type: gateway (có API surface). Dùng làm form mẫu cho một BFF/gateway.
 # ═══════════════════════════════════════════════════════════════════════════
 
-metadata
+metadata:
   domain: Platform Engineering
   system: banking-core
-  namespace gateway
+  namespace: gateway
 
 spec:
   type: gateway
