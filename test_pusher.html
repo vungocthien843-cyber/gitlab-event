@@ -80,8 +80,7 @@
     // Bật log của Pusher ra console để dễ debug
     Pusher.logToConsole = true;
 
-    // Khởi tạo kết nối Pusher
-    const pusher = new Pusher('2185456', {
+        const pusher = new Pusher('fa30be978aa0d1c81792', {
         cluster: 'ap1'
     });
 
@@ -89,7 +88,7 @@
     const logBox = document.getElementById('log-box');
 
     pusher.connection.bind('connected', function() {
-        statusEl.textContent = '🟢 Đã kết nối Pusher! Đang nghe ngóng GitHub...';
+        statusEl.textContent = '🟢 Đã kết nối Pusher';
         statusEl.className = 'status connected';
     });
 
