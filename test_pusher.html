@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI20K Webhook Livestream</title>
+    <!-- Thư viện Pusher JS -->
+    <script src="https://js.pusher.com/8.2.0/pusher.min.js"></script>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #0f172a;
+            color: #e2e8f0;
+            margin: 0;
+            padding: 20px;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        h1 {
+            color: #38bdf8;
+            border-bottom: 2px solid #1e293b;
+            padding-bottom: 10px;
+        }
+        .status {
+            display: inline-block;
+            padding: 5px 10px;
+            border-radius: 4px;
+            background-color: #f59e0b;
+            color: #fff;
+            font-size: 14px;
+            margin-bottom: 20px;
+        }
+        .status.connected {
+            background-color: #10b981;
+        }
+        #log-box {
+            background-color: #1e293b;
+            border-radius: 8px;
+            padding: 15px;
+            height: 500px;
+            overflow-y: auto;
+            font-family: 'Courier New', Courier, monospace;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        }
+        .log-entry {
+            margin-bottom: 10px;
+            padding: 8px;
+            border-left: 4px solid #3b82f6;
+            background-color: #0f172a;
+        }
+        .log-entry.success { border-left-color: #10b981; }
+        .log-entry.warning { border-left-color: #f59e0b; }
+        .log-entry.error { border-left-color: #ef4444; }
+        
+        .event-name {
+            font-weight: bold;
+            color: #93c5fd;
+        }
+        pre {
+            margin: 5px 0 0 0;
+            white-space: pre-wrap;
+            color: #a7f3d0;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>📡 Trạm Thu Phát Webhook Real-time (Pusher)</h1>
+    <div id="connection-status" class="status">Đang kết nối tới Pusher...</div>
+    
+    <div id="log-box">
+        <!-- Logs sẽ nhảy vào đây -->
+    </div>
+</div>
+
+<script>
+    // Bật log của Pusher ra console để dễ debug
+    Pusher.logToConsole = true;
+
+    // Khởi tạo kết nối Pusher
+    const pusher = new Pusher('2185456', {
+        cluster: 'ap1'
+    });
+
+    const statusEl = document.getElementById('connection-status');
+    const logBox = document.getElementById('log-box');
+
+    pusher.connection.bind('connected', function() {
+        statusEl.textContent = '🟢 Đã kết nối Pusher! Đang nghe ngóng GitHub...';
+        statusEl.className = 'status connected';
+    });
+
+    // Theo dõi kênh webhook-events
+    const channel = pusher.subscribe('webhook-events');
+
+    // Hàm tiện ích in log ra màn hình
+    function appendLog(eventName, data, level) {
+        const div = document.createElement('div');
+        div.className = `log-entry ${level}`;
+        
+        const title = document.createElement('div');
+        title.className = 'event-name';
+        title.textContent = `[${new Date().toLocaleTimeString()}] Sự kiện: ${eventName}`;
+        
+        const content = document.createElement('pre');
+        content.textContent = JSON.stringify(data, null, 2);
+        
+        div.appendChild(title);
+        div.appendChild(content);
+        
+        logBox.appendChild(div);
+        // Tự động cuộn xuống dưới cùng
+        logBox.scrollTop = logBox.scrollHeight;
+    }
+
+    // Bắt từng loại sự kiện
+    channel.bind('push_started', function(data) {
+        appendLog('Bắt đầu xử lý Push', data, 'info');
+    });
+
+    channel.bind('file_result', function(data) {
+        let level = 'success';
+        if (data.status === 'warning') level = 'warning';
+        if (data.status === 'error') level = 'error';
+        
+        appendLog(`Kết quả file: ${data.file}`, data, level);
+    });
+
+    channel.bind('push_completed', function(data) {
+        let level = data.status === 'success' ? 'success' : 'warning';
+        appendLog('Hoàn thành xử lý Push', data, level);
+    });
+
+</script>
+
+</body>
+</html>
