@@ -1,6 +1,6 @@
-specVersion: vsf-idp.io/v2
+specVersion vsf-idp.io/v2
 
-metadata:
+metadata
   domain: Core Banking
   system: banking-core
   namespace: account

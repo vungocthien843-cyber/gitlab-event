@@ -49,3 +49,4 @@ spec:
 
     - ref: resource:platform/redis
       reason: Cache session va rate-limit counter
+#vailonluon, vai lon luon, dau cat moi

@@ -1,6 +1,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Literal
@@ -17,8 +18,11 @@ from fastapi import (
     UploadFile,
     status,
 )
+from sse_starlette.sse import EventSourceResponse
 
 from src.agents.graph import agent
+from src.core.broadcaster import broadcaster
+from src.core.config import get_settings
 from src.core.logging import get_request_id
 from src.models import schemas
 from src.models.schemas import ApiResponse, ChatRequest, ChatResponse
@@ -189,3 +193,44 @@ async def github_webhook_handler(
         )
 
     return await github_events.handle_push(event, request_id=get_request_id())
+
+
+@router.get(
+    "/webhook/events",
+    summary="Kênh SSE — theo dõi tiến độ push GitHub theo thời gian thực",
+    description=(
+        "Server-Sent Events. Mỗi client kết nối đều nhận TOÀN BỘ sự kiện của "
+        "MỌI push đang xử lý (không lọc theo user/session — hệ thống không có "
+        "khái niệm phiên đăng nhập). Sự kiện: push_started, file_result, "
+        "push_completed. Kết nối nhàn rỗi nhận comment giữ-kết-nối định kỳ."
+    ),
+)
+async def github_webhook_events(request: Request) -> EventSourceResponse:
+    """Dashboard mở kết nối này 1 lần và giữ mở; KHÔNG polling.
+
+    Đây là kênh RIÊNG, không thay thế response của POST /webhook/github gửi
+    cho GitHub — hai kênh độc lập hoàn toàn, một cái GitHub đọc (đóng ngay sau
+    khi nhận), một cái browser đọc (giữ mở vô thời hạn).
+    """
+
+    async def event_stream():
+        queue = await broadcaster.subscribe()
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    message = await asyncio.wait_for(
+                        queue.get(), timeout=get_settings().sse_heartbeat_seconds
+                    )
+                except asyncio.TimeoutError:
+                    # Không có event thật nào trong khoảng chờ — gửi comment
+                    # giữ kết nối để proxy/load-balancer không coi là treo.
+                    yield {"comment": "keep-alive"}
+                    continue
+                yield {"event": message.event, "id": message.id, "data": message.data}
+        finally:
+            # Chạy dù thoát bằng break, exception, hay client ngắt giữa chừng.
+            await broadcaster.unsubscribe(queue)
+
+    return EventSourceResponse(event_stream())

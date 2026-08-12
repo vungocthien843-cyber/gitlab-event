@@ -95,6 +95,16 @@ app.include_router(router, prefix="/api/v1")
 async def request_context(request: Request, call_next):
     request_id = request.headers.get("X-Request-ID") or new_request_id()
     set_request_id(request_id)
+
+    # Kênh SSE giữ kết nối MỞ VÔ THỜI HẠN — đo "latency" kiểu request thường
+    # (chờ call_next xong rồi mới log) sẽ ra một con số vô nghĩa (có thể vài
+    # phút). Log riêng một dòng "opened", không đo elapsed.
+    if request.url.path.endswith("/webhook/events"):
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id
+        logger.info("%s %s -> stream opened (SSE)", request.method, request.url.path)
+        return response
+
     started = time.perf_counter()
 
     response = await call_next(request)
