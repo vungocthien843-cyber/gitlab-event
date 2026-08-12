@@ -1,0 +1,38 @@
+specVersion: vsf-idp.io/v2
+# ═══════════════════════════════════════════════════════════════════════════
+# FILE D3 — MẢNH 3/3 CỦA BỘ MERGE (tầng 5)
+# CỐ Ý khai báo lại component order-service (đã có ở D1) -> DUPLICATE_DECLARATION.
+# Đồng thời cũng provides api:order/order-service -> AMBIGUOUS_OWNER với D1.
+#
+# LƯU Ý: từng file D3 riêng vẫn hợp lệ. Chỉ khi merge với D1 mới xung đột.
+# Đây chính là loại lỗi mà một file không tự phát hiện được.
+# ═══════════════════════════════════════════════════════════════════════════
+
+metadata:
+  domain: Commerce
+  system: commerce-core
+  namespace: order
+
+spec:
+  type: service
+  # CÙNG id với D1 -> khi merge, hai file cùng khai báo component:order/order-service
+  id: order-service
+  name: Order Service DUPLICATE (D3)
+  description: Mảnh D3 - cố ý trùng khai báo với D1 để test DUPLICATE_DECLARATION.
+
+  owners:
+    members:
+      - user: v.d3owner@vinsmartfuture.tech
+        role: techlead
+
+  review:
+    branch: "main"
+
+  topology:
+    - ref: system:order/commerce-core
+      reason: thuộc system
+
+    # cùng provides api:order/order-service như D1 -> AMBIGUOUS_OWNER
+    - ref: providesApis:order/order-service
+      protocol: REST
+      reason: trùng chủ sở hữu API với D1
