@@ -1,0 +1,74 @@
+# docs/banking/core-account-service/catalog-info.yaml
+# Core Account Service — quản lý tài khoản, số dư, sổ cái nội bộ
+# Quy mô mục tiêu: 1 triệu người dùng, chịu tải đọc cao hơn ghi nhiều lần
+# ─────────────────────────────────────────────────────────────────────────────
+
+specVersion: vsf-idp.io/v2
+
+metadata:
+  domain: Core Banking
+  system: banking-core
+  namespace: account
+
+spec:
+  type: service
+  id: core-account-service
+  name: Core Account Service
+  description: >
+    Quản lý vòng đời tài khoản (mở/khoá/đóng), số dư, sổ cái (ledger) nội bộ.
+    Là nguồn sự thật (source of truth) duy nhất cho số dư tài khoản, được
+    Payment Transfer Service và các service khác gọi vào để trừ/cộng tiền.
+
+  owners:
+    members:
+      - user: v.anhpq8@vinsmartfuture.tech
+        role: techlead
+      - user: v.duchm4@vinsmartfuture.tech
+        role: maintainer
+
+  review:
+    branch: "main"
+
+  topology:
+    # ── Membership ───────────────────────────────────────────────────────────
+    - ref: system:banking/banking-core
+      reason: Component này thuộc system banking-core
+
+    # ── APIs ──────────────────────────────────────────────────────────────────
+    - ref: providesApis:account/core-account-service
+      protocol: REST
+      reason: OpenAPI spec của chính service này, expose endpoint /accounts, /accounts/{id}/balance
+
+    - ref: consumesApis:identity/kyc-service
+      protocol: REST
+      reason: Kiểm tra thông tin định danh khi mở tài khoản mới
+
+    # ── Sibling components ────────────────────────────────────────────────────
+    - ref: component:payment/payment-transfer-service
+      reason: Sibling — service này gọi vào Core Account Service để trừ/cộng số dư khi chuyển tiền
+
+    # ── Infrastructure ────────────────────────────────────────────────────────
+    # LƯU Ý: khai báo rõ có primary + read replica — dùng làm ví dụ ĐỐI CHỨNG
+    # với payment-transfer-service (vốn chỉ có 1 instance) khi test agent so sánh
+    # 2 thiết kế khác mức độ chịu lỗi.
+    - ref: resource:account/account-postgres-primary
+      reason: Ghi số dư, sổ cái — nguồn sự thật duy nhất (source of truth)
+
+    - ref: resource:account/account-postgres-replica
+      reason: Read replica phục vụ truy vấn số dư, giảm tải cho primary khi đọc nhiều
+
+    - ref: resource:platform/kafka
+      reason: Message broker dùng chung toàn platform
+
+    # ── Kafka topics ──────────────────────────────────────────────────────────
+    - ref: publishesTo:account/account.balance-changed
+      protocol: kafka
+      reason: Publish sự kiện mỗi khi số dư tài khoản thay đổi, dùng cho reconciliation
+
+    - ref: publishesTo:audit/audit.transaction-log
+      protocol: kafka
+      reason: Ghi log audit mọi thay đổi số dư (bắt buộc theo Thông tư 50/2024/TT-NHNN, Điều 18)
+
+    - ref: consumesFrom:identity/identity.user-created
+      protocol: kafka
+      reason: Tự động tạo tài khoản mặc định khi có khách hàng mới được xác thực xong KYC
