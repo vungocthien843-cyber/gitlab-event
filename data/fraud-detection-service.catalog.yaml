@@ -2,7 +2,7 @@
 # Fraud Detection Service — CẤP 3: dịch vụ hỗ trợ (risk/compliance), không lộ diện với khách hàng
 # ─────────────────────────────────────────────────────────────────────────────
 
-specVersion: vsf-idp.io/v2
+specVersion: vsf-idp.io/v1
 
 metadata:
   domain: Risk & Compliance

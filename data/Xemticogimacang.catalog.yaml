@@ -57,4 +57,3 @@ spec:
     - ref: publishesTo:notification/notification.delivery-status
       protocol: kafka
       reason: Publish trạng thái gửi để Payment Transfer Service cập nhật lại UI cho khách hàng
-#Đầu lòng hai ả tố nga, thúy keief là chị em là thúy vân
