@@ -36,7 +36,7 @@ spec:
     # ── APIs (chỉ gọi ra ngoài, không expose API cho ai) ───────────────────────
     - ref: consumesApis:vendor/sms-gateway-provider
       protocol: REST
-      reason: Gọi nhà cung cấp SMS/push notification bên thứ 3 để gửi tin nhắn thật cho khách hàng. Đầu lòng
+      reason: Gọi nhà cung cấp SMS/push notification bên thứ 3 để gửi tin nhắn thật cho khách hàng
 
     # ── Infrastructure ────────────────────────────────────────────────────────
     - ref: resource:notification/notification-postgres
