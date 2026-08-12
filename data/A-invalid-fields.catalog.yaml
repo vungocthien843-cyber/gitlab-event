@@ -1,0 +1,78 @@
+specVersion: wrong-version-here
+# ═══════════════════════════════════════════════════════════════════════════
+# FILE A — DỒN LỖI TẦNG 2, 3, 4 (định dạng trường, ref, nhất quán chéo)
+# File này VẪN PARSE ĐƯỢC (không lỗi cú pháp), nên validator chạy hết và gom
+# được nhiều lỗi cùng lúc. Chủ đích: test khả năng thu thập lỗi, không fail-fast.
+#
+# Lỗi cố ý nhồi vào (đối chiếu với bảng trong README-testset.md):
+#   [T2] specVersion sai            -> UNSUPPORTED_VERSION
+#   [T2] system có chữ hoa          -> INVALID_FORMAT
+#   [T2] namespace có chữ hoa+space -> INVALID_FORMAT
+#   [T2] id dùng gạch dưới          -> INVALID_FORMAT
+#   [T2] type không hợp lệ          -> INVALID_ENUM
+#   [T2] domain > 128 ký tự         -> TOO_LONG
+#   [T4] role sai                   -> INVALID_ENUM
+#   [T4] user email trùng           -> DUPLICATE
+#   [T4] KHÔNG có techlead          -> MISSING_TECHLEAD
+#   [T3] ref sai định dạng          -> INVALID_REF
+#   [T3] kind lạ trong ref          -> UNKNOWN_KIND
+#   [T3] ref trùng                  -> DUPLICATE_EDGE
+#   [T3] tự trỏ chính mình          -> SELF_REFERENCE
+#   [T4] system ref lệch metadata   -> SYSTEM_MISMATCH
+#   [T6] email sai định dạng        -> (điểm mù, hiện KHÔNG bắt)
+#   [T6] protocol lạ                -> (điểm mù, hiện KHÔNG bắt)
+# ═══════════════════════════════════════════════════════════════════════════
+
+metadata:
+  domain: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+  system: My-System-CAPS
+  namespace: "Bad NS With Space"
+
+spec:
+  type: microservice
+  id: bad_id_with_underscore
+  name: File A - Nhồi lỗi tầng 2-4
+  description: File này chứa nhiều lỗi định dạng và nhất quán để test validator gom lỗi.
+
+  owners:
+    members:
+      # KHÔNG có ai role techlead -> MISSING_TECHLEAD
+      - user: not-a-valid-email
+        role: member
+      - user: v.trung1@vinsmartfuture.tech
+        role: owner
+      # email trùng với dòng đầu (sau khi chuẩn hoá lowercase)
+      - user: NOT-A-VALID-EMAIL
+        role: maintainer
+
+  review:
+    branch: "main"
+
+  topology:
+    # system ref lệch metadata.system (metadata ghi My-System-CAPS)
+    - ref: system:my-system-caps/some-other-system
+      reason: system ref cố tình khác metadata.system
+
+    # ref sai định dạng - thiếu dấu / ngăn namespace và name
+    - ref: resource:noslashhere
+      reason: thiếu slash
+
+    # kind lạ - 'database' không thuộc 7 kind hợp lệ
+    - ref: database:n/mydb
+      reason: kind không được hỗ trợ
+
+    # protocol lạ - FTP không nằm trong known protocol set (điểm mù)
+    - ref: consumesApis:other/some-api
+      protocol: FTP
+      reason: protocol lạ, hiện parser không cảnh báo
+
+    # hai ref giống hệt -> DUPLICATE_EDGE
+    - ref: resource:n/shared-cache
+      reason: lần khai thứ nhất
+    - ref: resource:n/shared-cache
+      reason: lần khai thứ hai, trùng
+
+    # tự trỏ về chính component này (namespace + id = component tự thân)
+    # lưu ý namespace bị lỗi format nên id thật khó khớp, nhưng vẫn để test
+    - ref: component:bad-ns-with-space/bad_id_with_underscore
+      reason: tự tham chiếu

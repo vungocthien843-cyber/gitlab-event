@@ -132,7 +132,7 @@ async def request_validation_handler(
     request: Request, exc: RequestValidationError
 ) -> JSONResponse:
     missing_file = any(
-        e.get("type") == "missing" and "file" in [str(x) for x in e.get("loc", ())]
+        e.get("type") == "missing" and "files" in [str(x) for x in e.get("loc", ())]
         for e in exc.errors()
     )
     code = ErrorCode.NO_FILE if missing_file else ErrorCode.INVALID_STRUCTURE
