@@ -38,4 +38,4 @@ spec:
       reason: thuộc system
     # type là service nhưng KHÔNG khai providesApis -> thiếu API surface
     - ref: resource:payment/payment-db
-      reason: datastore
+      reason: datastore râu hùm hàm én mày ngài, vai năm tấc rộng thân mười thước cao
