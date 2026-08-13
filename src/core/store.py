@@ -23,8 +23,8 @@ import os
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime
-from zoneinfo import ZoneInfo
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from src.models.schemas import CatalogSummary
 from src.repositories import catalog_repository
@@ -91,7 +91,9 @@ class StoredCatalog:
     def from_document(
         cls, document: dict[str, Any], record_id: int | None = None
     ) -> StoredCatalog | None:
-        """Dựng lại từ JSON đã lưu. None nếu tài liệu không đủ để dựng.
+        """Dựng lại từ dict gộp đã lưu ({nodes, edges, information, diagnostics,
+        file_json} — đúng shape `catalog_repository.find()`/`all_documents()`
+        trả về). None nếu tài liệu không đủ để dựng.
 
         Đây là chiều ngược của `_save_graph_document`: mọi thứ `CatalogSummary`
         cần đều rút được từ chính nội dung JSON, trừ `size_bytes`.
@@ -100,11 +102,12 @@ class StoredCatalog:
         không được phép làm sập cả tiến trình lúc khởi động. Bỏ qua dòng đó và
         ghi log là đủ.
         """
-        filename = catalog_repository.document_filename(document)
+        information = document.get("information") or {}
+        filename = catalog_repository.information_filename(information)
         if filename is None:
             return None
 
-        sources = document.get("scope", {}).get("sources") or [{}]
+        sources = (information.get("scope") or {}).get("sources") or [{}]
         diagnostics = document.get("diagnostics") or {}
 
         parsed = ParsedFile(
@@ -116,6 +119,7 @@ class StoredCatalog:
                 errors=[Issue(**i) for i in diagnostics.get("errors", [])],
                 warnings=[Issue(**i) for i in diagnostics.get("warnings", [])],
             ),
+            spec_version=information.get("specVersion"),
         )
         return cls(
             parsed=parsed,
@@ -123,7 +127,7 @@ class StoredCatalog:
             output_file=output_name(filename),
             record_id=record_id,
             size_bytes=None,
-            uploaded_at=_parse_generated_at(document.get("generatedAt")),
+            uploaded_at=_parse_generated_at(information.get("generatedAt")),
         )
 
     def summary_dict(self, include_diagnostics: bool = False) -> dict[str, Any]:

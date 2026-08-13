@@ -1,0 +1,55 @@
+specVersion: vsf-idp.io/v2
+# ═══════════════════════════════════════════════════════════════════════════
+# FILE CHUẨN 2/5 — Core Account Service
+# Nguồn sự thật về số dư tài khoản. Được gateway và payment gọi vào.
+# type: service. Dùng làm form mẫu cho một core service có datastore + event.
+# ═══════════════════════════════════════════════════════════════════════════
+
+metadata
+  domain: Core Banking
+  system: banking-core
+  namespace: account
+
+spec
+  type: service
+  id: core-account-service
+  name: Core Account Service
+  description: >-
+    Quản lý vòng đời tài khoản (mở/khoá/đóng), số dư và sổ cái nội bộ. Là nguồn
+    sự thật duy nhất cho số dư tài khoản, được các service khác gọi vào để
+    trừ/cộng tiền.
+
+  owners
+    members:
+      - user: v.anhpq8@vinsmartfuture.tech
+        role: techlead
+      - user: v.duchm4@vinsmartfuture.tech
+        role: maintainer
+
+  review:
+    branch: "main"
+
+  topology:
+    - ref: system:banking/banking-core
+      reason: Component này thuộc system banking-core
+
+    - ref: providesApis:account/core-account-service
+      protocol: REST
+      reason: Expose endpoint /accounts, /accounts/{id}/balance
+
+    - ref: resource:account/account-postgres-primary
+      reason: Datastore chính lưu số dư và sổ cái, nguồn sự thật duy nhất
+
+    - ref: resource:account/account-postgres-replica
+      reason: Read replica phục vụ truy vấn số dư, giảm tải cho primary
+
+    - ref: resource:platform/kafka
+      reason: Message broker dùng chung toàn platform
+
+    - ref: publishesTo:account/account.balance-changed
+      protocol: Kafka
+      reason: Phát sự kiện mỗi khi số dư tài khoản thay đổi, dùng cho reconciliation
+
+    - ref: publishesTo:audit/audit.transaction-log
+      protocol: Kafka
+      reason: Ghi log audit mọi thay đổi số dư theo Thông tư 50/2024/TT-NHNN

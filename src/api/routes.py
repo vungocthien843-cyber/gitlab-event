@@ -1,6 +1,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Literal
@@ -18,12 +19,10 @@ from fastapi import (
     status,
 )
 
-from src.agents.graph import agent
 from src.core.logging import get_request_id
 from src.models import schemas
-from src.models.schemas import ApiResponse, ChatRequest, ChatResponse
+from src.models.schemas import ApiResponse
 from src.services import github_events, ingest
-from src.services.validation import read_upload_within_limit
 
 # Không gọi load_dotenv() ở đây: app/core/config.py đã nạp .env lúc import (và
 # nạp theo đường dẫn tuyệt đối, nên chạy uvicorn từ thư mục nào cũng đúng).
@@ -37,36 +36,37 @@ router = APIRouter(prefix="/catalogs", tags=["Catalogs"])
     "",
     response_model=ApiResponse,
     status_code=status.HTTP_201_CREATED,
-    summary="Tải lên 1 file catalog-info.yaml",
+    summary="Tải lên 1 hoặc nhiều file catalog-info.yaml",
     responses={
-        201: {"description": "Hợp lệ (status=success) hoặc hợp lệ kèm cảnh báo (status=warning)"},
-        400: {"description": "Từ chối vì lý do an toàn (severity=critical)"},
-        409: {"description": "Tranh chấp quyền sở hữu, cần người duyệt (next_action=human_review)"},
-        422: {"description": "Input không hợp lệ (severity=validation)"},
+        201: {"description": "Đã xử lý (status=success nếu mọi file OK, status=warning nếu có file lỗi/cảnh báo)"},
+        422: {"description": "Không có file nào được gửi lên (severity=validation)"},
         500: {"description": "Lỗi hệ thống (severity=critical)"},
     },
 )
-async def upload_catalog(
-    file: UploadFile = File(...),
+async def upload_catalogs(
+    files: list[UploadFile] = File(...),
     force: bool = Query(default=False, description="Ép ghi đè nếu có tranh chấp quyền sở hữu")
 ) -> ApiResponse:
-    """Nhận file, chạy 5 tầng validate, sinh graph JSON và lưu vào bảng `input_json`.
+    """Nhận 1 hoặc nhiều file, chạy 5 tầng validate cho từng file, sinh graph JSON
+    và lưu vào bảng `input_json`. Một file lỗi không chặn các file còn lại — chỉ
+    sự cố hệ thống mới dừng cả lượt tải lên.
 
     Chỉ file qua được TOÀN BỘ validate mới được lưu. Bản cũ ghi file JSON ngay
     cả khi parse còn lỗi — nghĩa là kho output tích luỹ dữ liệu hỏng mà không ai
     biết. Giờ thì lỗi ở tầng nào cũng dừng trước khi chạm vào database.
     """
+    uploads: list[tuple[str | None, bytes, str | None]] = []
     try:
-        content = await read_upload_within_limit(file)
+        for f in files:
+            content = await f.read()
+            uploads.append((f.filename, content, f.content_type))
     finally:
         # UploadFile lớn được đệm ra file tạm; không đóng thì rác nằm lại trên đĩa.
-        # `finally` chạy cả khi read raise FILE_TOO_LARGE.
-        await file.close()
+        for f in files:
+            await f.close()
 
-    return ingest.ingest_catalog(
-        filename=file.filename,
-        content=content,
-        content_type=file.content_type,
+    return ingest.ingest_catalogs_batch(
+        uploads=uploads,
         request_id=get_request_id(),
         force=force,
     )
@@ -116,23 +116,6 @@ def delete_catalog(filename: str, response: Response) -> ApiResponse:
     response.status_code = status.HTTP_200_OK
     return ingest.delete_catalog(unquote(filename), request_id=get_request_id())
 
-
-@router.post("/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest) -> ChatResponse:
-    """Chat vá»›i AI agent."""
-    try:
-        result = await agent.ainvoke({"query": request.message})
-        return ChatResponse(
-            response=result.get("response", ""),
-            analysis=result.get("analysis", ""),
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.get("/status")
-async def agent_status():
-    """Kiểm tra trạng thái agent."""
-    return {"status": "ready", "agent": "LangGraph Agent v1.0"}
 
 
 # ==========================================
@@ -189,3 +172,44 @@ async def github_webhook_handler(
         )
 
     return await github_events.handle_push(event, request_id=get_request_id())
+
+
+@router.get(
+    "/webhook/events",
+    summary="Kênh SSE — theo dõi tiến độ push GitHub theo thời gian thực",
+    description=(
+        "Server-Sent Events. Mỗi client kết nối đều nhận TOÀN BỘ sự kiện của "
+        "MỌI push đang xử lý (không lọc theo user/session — hệ thống không có "
+        "khái niệm phiên đăng nhập). Sự kiện: push_started, file_result, "
+        "push_completed. Kết nối nhàn rỗi nhận comment giữ-kết-nối định kỳ."
+    ),
+)
+async def github_webhook_events(request: Request) -> EventSourceResponse:
+    """Dashboard mở kết nối này 1 lần và giữ mở; KHÔNG polling.
+
+    Đây là kênh RIÊNG, không thay thế response của POST /webhook/github gửi
+    cho GitHub — hai kênh độc lập hoàn toàn, một cái GitHub đọc (đóng ngay sau
+    khi nhận), một cái browser đọc (giữ mở vô thời hạn).
+    """
+
+    async def event_stream():
+        queue = await broadcaster.subscribe()
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    message = await asyncio.wait_for(
+                        queue.get(), timeout=get_settings().sse_heartbeat_seconds
+                    )
+                except asyncio.TimeoutError:
+                    # Không có event thật nào trong khoảng chờ — gửi comment
+                    # giữ kết nối để proxy/load-balancer không coi là treo.
+                    yield {"comment": "keep-alive"}
+                    continue
+                yield {"event": message.event, "id": message.id, "data": message.data}
+        finally:
+            # Chạy dù thoát bằng break, exception, hay client ngắt giữa chừng.
+            await broadcaster.unsubscribe(queue)
+
+    return EventSourceResponse(event_stream())

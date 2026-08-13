@@ -37,6 +37,7 @@ from urllib.parse import quote
 import httpx
 from starlette.concurrency import run_in_threadpool
 
+from src.core.broadcaster import broadcaster
 from src.core.config import get_settings
 from src.core.config import ALLOWED_EXTENSIONS
 from src.core.errors import (
@@ -47,6 +48,7 @@ from src.core.errors import (
     Stage,
 )
 from src.models import schemas
+from src.models.events import FileResultEvent, PushCompletedEvent, PushStartedEvent
 from src.models.schemas import ApiResponse, Issue
 from src.repositories import github_file_repository
 from src.services import ingest
@@ -361,6 +363,18 @@ async def handle_push(event: PushEvent, request_id: str) -> ApiResponse:
     failed: list[str] = []
     hashed: list[str] = []
 
+    total_files = len(event.removed_files) + len(event.added_files) + len(event.modified_files)
+    await broadcaster.publish(
+        "push_started",
+        PushStartedEvent(
+            repository=event.repo_full_name,
+            branch=event.branch,
+            commit_id=event.commit_id,
+            commit_url=event.commit_url,
+            total_files=total_files,
+        ).model_dump(mode="json"),
+    )
+
     # ── Bước 1: xoá catalog của các file đã bị removed ───────────────────────
     # Xoá trước khi nạp: nếu một push vừa xoá 'a.yaml' vừa thêm 'b.yaml' khai
     # cùng một node, làm ngược thứ tự sẽ dựng ra tranh chấp quyền sở hữu giả.
@@ -406,11 +420,24 @@ async def handle_push(event: PushEvent, request_id: str) -> ApiResponse:
                 # trước). Không có gì để làm, và cũng không có gì sai.
                 skipped.append(name)
                 logger.info("Bỏ qua xoá '%s': chưa từng được nạp.", name)
+                await broadcaster.publish(
+                    "file_result",
+                    FileResultEvent(path=path, filename=name, outcome="skipped").model_dump(mode="json"),
+                )
                 continue
+            issue = _issue_from(exc, path)
             failed.append(path)
-            issues.append(_issue_from(exc, path))
+            issues.append(issue)
+            await broadcaster.publish(
+                "file_result",
+                FileResultEvent(path=path, filename=name, outcome="failed", issue=issue).model_dump(mode="json"),
+            )
         else:
             deleted.append(name)
+            await broadcaster.publish(
+                "file_result",
+                FileResultEvent(path=path, filename=name, outcome="deleted").model_dump(mode="json"),
+            )
 
     # ── Bước 2: nạp catalog của các file added + modified ────────────────────
     targets: list[tuple[str, github_file_repository.FileStatus]] = [
@@ -436,13 +463,16 @@ async def handle_push(event: PushEvent, request_id: str) -> ApiResponse:
         content = await _fetch_file(event.repo_full_name, event.commit_id, path)
         if content is None:
             failed.append(path)
-            issues.append(
-                Issue(
-                    severity="error",
-                    code=ErrorCode.GITHUB_FETCH_FAILED.value,
-                    message=f"Không tải được nội dung '{path}' từ GitHub.",
-                    source=path,
-                )
+            issue = Issue(
+                severity="error",
+                code=ErrorCode.GITHUB_FETCH_FAILED.value,
+                message=f"Không tải được nội dung '{path}' từ GitHub.",
+                source=path,
+            )
+            issues.append(issue)
+            await broadcaster.publish(
+                "file_result",
+                FileResultEvent(path=path, filename=name, outcome="failed", issue=issue).model_dump(mode="json"),
             )
             continue
 
@@ -460,13 +490,30 @@ async def handle_push(event: PushEvent, request_id: str) -> ApiResponse:
         except CriticalError:
             raise
         except AppError as exc:
+            issue = _issue_from(exc, path)
             failed.append(path)
-            issues.append(_issue_from(exc, path))
+            issues.append(issue)
+            await broadcaster.publish(
+                "file_result",
+                FileResultEvent(path=path, filename=name, outcome="failed", issue=issue).model_dump(mode="json"),
+            )
         else:
             ingested.append(name)
             # Cảnh báo của chính file (thiếu owner, ref lạ...) đã được `ingest`
             # dựng sẵn thành Issue — chuyển tiếp nguyên vẹn thay vì nuốt mất.
             issues.extend(result.issues)
+            await broadcaster.publish(
+                "file_result",
+                FileResultEvent(
+                    path=path,
+                    filename=name,
+                    outcome="ingested",
+                    # File nạp thành công nhưng vẫn có warning (thiếu owner...)
+                    # — gửi warning ĐẦU TIÊN nếu có, để dashboard biết "xanh
+                    # nhưng có điều cần xem", thay vì chỉ tô xanh trơn.
+                    issue=result.issues[0] if result.issues else None,
+                ).model_dump(mode="json"),
+            )
 
     # ── Bước 3: dựng response ────────────────────────────────────────────────
     details: dict[str, Any] = {
@@ -481,6 +528,24 @@ async def handle_push(event: PushEvent, request_id: str) -> ApiResponse:
         "skipped": skipped,
         "failed": failed,
     }
+
+    # Báo hoàn tất cho dashboard SSE. Thứ tự với response GitHub không quan
+    # trọng (2 kênh độc lập) nhưng làm trước để dashboard không bao giờ thấy
+    # "completed" trễ hơn response GitHub nhận.
+    await broadcaster.publish(
+        "push_completed",
+        PushCompletedEvent(
+            repository=event.repo_full_name,
+            branch=event.branch,
+            commit_id=event.commit_id,
+            status="warning" if issues else "success",
+            hashed=hashed,
+            ingested=ingested,
+            deleted=deleted,
+            skipped=skipped,
+            failed=failed,
+        ).model_dump(mode="json"),
+    )
 
     summary = (
         f"Push lên nhánh '{event.branch}': băm {len(hashed)} file, "

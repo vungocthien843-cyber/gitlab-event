@@ -25,14 +25,21 @@ from src.core.db import Base
 class InputJson(Base):
     """Bảng `input_json` — mỗi dòng là graph JSON sinh ra từ một catalog.
 
-    Chỉ 2 cột theo đúng thiết kế:
+    5 cột JSONB tách theo vai trò, thay vì 1 cột `content` gộp hết như trước:
 
-        id       BIGSERIAL  khoá chính tự tăng
-        content  JSONB      nội dung JSON, y hệt thứ trước đây ghi ra file
+        id           BIGSERIAL  khoá chính tự tăng
+        nodes        JSONB      dict {node_id: attrs} — đúng document["nodes"]
+        edges        JSONB      list edge dict — đúng document["edges"]
+        information  JSONB      schemaVersion/specVersion/generatedAt/scope
+        diagnostics  JSONB      {"errors": [...], "warnings": [...]}
+        file_json    JSONB      {"nodes": ..., "edges": ...} — bản gộp để trả
+                                 nguyên khối cho client tải xuống, không phải
+                                 nguồn sự thật (nguồn sự thật là `nodes`+`edges`)
 
-    Dùng JSONB chứ không TEXT: Postgres parse sẵn nên truy vấn được vào bên
-    trong tài liệu. Chính nhờ vậy mới tra được "dòng nào ứng với file nào" qua
-    `content->'scope'->'sources'->0->>'file'` mà không cần thêm cột.
+    Tách `nodes`/`edges` ra riêng để truy vấn trực tiếp bằng toán tử JSON của
+    Postgres mà không phải bóc tách `content` mỗi lần. Tên cột dùng số nhiều,
+    khớp với tên field trong JSON và tên biến trong `ParsedFile`/`catalog_to_
+    graph.py` — tránh một tầng "dịch tên" số ít/số nhiều giữa DB và service.
 
     JSONB không giữ thứ tự key và bỏ khoảng trắng — không sao, vì mọi thứ tự có
     ý nghĩa (node theo id, edge theo topology) đều nằm trong mảng hoặc do tầng
@@ -42,7 +49,11 @@ class InputJson(Base):
     __tablename__ = "input_json"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    content: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    nodes: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    edges: Mapped[list[Any]] = mapped_column(JSONB, nullable=False)
+    information: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    diagnostics: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    file_json: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
 
     def __repr__(self) -> str:  # pragma: no cover - chỉ để debug
         return f"<InputJson id={self.id}>"

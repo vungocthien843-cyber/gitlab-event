@@ -250,11 +250,6 @@ def parse_document(doc: dict[str, Any], filename: str,
                    d: Diagnostics) -> tuple[dict[str, Any], list[dict[str, Any]], str | None]:
     """Trả về (nodes, edges, root_id). Node self luôn đứng đầu nodes."""
 
-    if doc.get("specVersion") != SPEC_VERSION:
-        d.err("UNSUPPORTED_VERSION",
-              f"Chỉ hỗ trợ specVersion '{SPEC_VERSION}', nhận '{doc.get('specVersion')}'",
-              yaml_path="specVersion", source=filename)
-
     meta = doc.get("metadata")
     if not isinstance(meta, dict):
         raise FatalError(Issue("TYPE_MISMATCH", "metadata phải là mapping",
@@ -564,12 +559,17 @@ class ParsedFile:
     edges: list[dict[str, Any]]
     root_id: str | None
     diagnostics: Diagnostics
+    # specVersion nguyên văn người dùng khai — không còn so cứng với SPEC_VERSION,
+    # chỉ mang theo để lưu lại đúng những gì input thật sự nói.
+    spec_version: str | None = None
 
 
 def parse_single(yaml_text: str, filename: str) -> ParsedFile:
     d = Diagnostics()
+    spec_version = None
     try:
         doc = load_yaml(yaml_text)
+        spec_version = doc.get("specVersion")
         nodes, edges, root_id = parse_document(doc, filename, d)
     except FatalError as exc:
         d.errors.append(exc.issue)
@@ -579,7 +579,7 @@ def parse_single(yaml_text: str, filename: str) -> ParsedFile:
         check_cycles(build_nx_graph(nodes, edges), d)
         assert_invariants(nodes, edges)
 
-    return ParsedFile(filename, nodes, edges, root_id, d)
+    return ParsedFile(filename, nodes, edges, root_id, d, spec_version)
 
 
 def build_document(yaml_text: str, filename: str,
@@ -590,22 +590,25 @@ def build_document(yaml_text: str, filename: str,
     ordered_nodes = {k: p.nodes[k] for k in sorted(p.nodes)}
     ordered_edges = sorted(p.edges, key=_edge_sort_key)
 
-    out: dict[str, Any] = {
+    information: dict[str, Any] = {
         "schemaVersion": SCHEMA_VERSION,
-        "specVersion": SPEC_VERSION,
+        "specVersion": p.spec_version,
     }
     if timestamp:
-        out["generatedAt"] = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).strftime("%Y-%m-%dT%H:%M:%S+07:00")
+        information["generatedAt"] = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).strftime("%Y-%m-%dT%H:%M:%S+07:00")
 
-    out["scope"] = {
+    information["scope"] = {
         "kind": "single",
         "root": p.root_id,
         "sources": [{"file": filename, "root": p.root_id}],
     }
-    out["nodes"] = ordered_nodes
-    out["edges"] = ordered_edges
-    out["diagnostics"] = p.diagnostics.as_dict()
-    return out
+
+    return {
+        "nodes": ordered_nodes,
+        "edges": ordered_edges,
+        "information": information,
+        "diagnostics": p.diagnostics.as_dict(),
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -634,7 +637,7 @@ def render_summary(out: dict[str, Any], out_path: Path) -> str:
     owned = sum(1 for n in nodes.values() if n["declared_by"])
     full = sum(1 for n in nodes.values() if n["spec"])
 
-    lines.append(f"OK  {out['scope']['root']}")
+    lines.append(f"OK  {out['information']['scope']['root']}")
     lines.append(f"    nodes  {len(nodes):>3}  ("
                  + ", ".join(f"{k} {v}" for k, v in sorted(by_kind.items()))
                  + f") — {full} đủ spec, {owned - full} chờ ingest, "

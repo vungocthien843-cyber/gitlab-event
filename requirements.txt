@@ -6,6 +6,9 @@ pydantic-settings>=2.7.0
 python-dotenv>=1.0.0
 python-multipart>=0.0.9
 
+# Real-time push notifications (SSE) cho dashboard theo dõi tiến độ webhook
+sse-starlette>=2.1.0
+
 # Catalog ingestion (YAML -> graph JSON)
 pyyaml>=6.0
 networkx>=3.0
@@ -30,4 +33,4 @@ pytest>=8.0.0
 pytest-asyncio>=0.24.0
 httpx>=0.28.0
 tzdata>=2024.1
-
+pusher

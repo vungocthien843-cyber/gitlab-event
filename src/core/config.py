@@ -148,6 +148,23 @@ class Settings(BaseSettings):
     # một request webhook sẽ bắn hàng trăm lệnh gọi API GitHub và treo tới timeout.
     github_max_files_per_push: int = 50
 
+    # ── Real-time push notifications (SSE/Pusher) ───────────────────────────
+    # Số event tối đa giữ trong hàng đợi của MỖI client trước khi phải rớt bớt
+    # event cũ. 100 đủ cho một lần push chạm hàng chục file (mỗi file 1 event)
+    # cộng thêm push_started/push_completed, mà không giữ RAM vô hạn nếu 1
+    # client treo kết nối nhưng không đọc.
+    sse_client_queue_size: int = 100
+    # Khoảng cách giữa 2 lần gửi comment giữ-kết-nối (": keep-alive\n\n") khi
+    # không có event thật nào để gửi. Ngăn proxy/load balancer coi kết nối
+    # nhàn rỗi là chết rồi tự đóng (nhiều proxy mặc định timeout 30-60s).
+    sse_heartbeat_seconds: int = 15
+
+    # Pusher Credentials
+    pusher_app_id: str = "2185456"
+    pusher_key: str = "fa30be978aa0d1c81792"
+    pusher_secret: str = "3f6975a8823de9521847"
+    pusher_cluster: str = "ap1"
+    
 @lru_cache
 def get_settings() -> Settings:
     return Settings()

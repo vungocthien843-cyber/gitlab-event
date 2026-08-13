@@ -20,22 +20,23 @@ from __future__ import annotations
 import difflib
 import logging
 from datetime import datetime
-from zoneinfo import ZoneInfo
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from src.core.errors import (
+    AppError,
     CriticalError,
     ErrorCode,
     HumanReviewRequiredError,
     Stage,
     ValidationError,
 )
+from src.core.store import StoredCatalog, output_name, store
 from src.models import schemas
 from src.models.schemas import ApiResponse, Issue
 from src.repositories import catalog_repository
 from src.services.catalog_merge import merge_documents
 from src.services.catalog_to_graph import ParsedFile
-from src.core.store import StoredCatalog, output_name, store
 from src.services.validation import run_validation_pipeline
 
 logger = logging.getLogger(__name__)
@@ -91,6 +92,79 @@ def ingest_catalog(
     return _build_ingest_response(validated, output_file, record_id, replaced, request_id)
 
 
+def ingest_catalogs_batch(
+    uploads: list[tuple[str | None, bytes, str | None]],
+    request_id: str,
+    force: bool = False,
+) -> ApiResponse:
+    """Nạp N file trong 1 request. Tái dùng `ingest_catalog` cho từng file, theo
+    đúng pattern đã có ở `github_events.py::handle_push`: một file lỗi (AppError)
+    không chặn các file còn lại, chỉ `CriticalError` (sự cố hệ thống) mới dừng
+    hẳn cả batch.
+    """
+    if not uploads:
+        raise ValidationError(
+            ErrorCode.NO_FILE,
+            "Chưa chọn file nào để tải lên.",
+            stage=Stage.RECEIVE,
+        )
+
+    results: list[dict[str, Any]] = []
+    issues: list[Issue] = []
+    succeeded = 0
+
+    for filename, content, content_type in uploads:
+        label = filename or "(không tên)"
+        try:
+            result = ingest_catalog(filename, content, content_type, request_id, force=force)
+        except CriticalError:
+            raise  # lỗi hệ thống: dừng hẳn, không nuốt
+        except AppError as exc:
+            code = exc.code.value if isinstance(exc.code, ErrorCode) else str(exc.code)
+            results.append({
+                "file": label,
+                "status": "error",
+                "code": code,
+                "stage": exc.stage.value if hasattr(exc.stage, "value") else str(exc.stage),
+                "details": exc.details,
+            })
+            if exc.issues:
+                for i in exc.issues:
+                    if i.source is None:
+                        i.source = label
+                    issues.append(i)
+            else:
+                issues.append(Issue(severity="error", code=code, message=exc.message, source=label))
+        else:
+            succeeded += 1
+            details = result.details
+            results.append({
+                "file": details.get("file", label),
+                "status": "success" if result.status == "success" else "warning",
+                "root": details.get("root"),
+                "node_count": details.get("node_count"),
+                "edge_count": details.get("edge_count"),
+                "output_file": details.get("output_file"),
+                "size_bytes": details.get("size_bytes"),
+                "record_id": details.get("record_id"),
+                "replaced_existing": details.get("replaced_existing", False),
+            })
+            issues.extend(result.issues)
+
+    failed = len(uploads) - succeeded
+    summary = f"Đã xử lý {len(uploads)} file: {succeeded} thành công, {failed} lỗi."
+    details = {
+        "total": len(uploads),
+        "succeeded": succeeded,
+        "failed": failed,
+        "results": results,
+    }
+
+    if failed == 0 and not issues:
+        return schemas.success(summary, request_id=request_id, details=details)
+    return schemas.warning(summary, request_id=request_id, issues=issues, details=details)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Các bước
 # ─────────────────────────────────────────────────────────────────────────────
@@ -136,7 +210,7 @@ def _check_cross_file_conflicts(parsed: ParsedFile, filename: str) -> None:
 
 
 def _build_graph_document(parsed: ParsedFile) -> dict[str, Any]:
-    """Dựng đúng nội dung JSON sẽ nằm trong cột `content`.
+    """Dựng đúng nội dung JSON sẽ được tách vào các cột của `input_json`.
 
     Giống hệt thứ trước đây ghi ra `output_json/*.json`, cộng thêm `generatedAt`
     — trường mà `build_document` của CLI vẫn sinh ra cho file JSON. Nó không phải
@@ -144,7 +218,7 @@ def _build_graph_document(parsed: ParsedFile) -> dict[str, Any]:
     nhờ nó mà lúc nạp lại từ DB vẫn biết được catalog này nạp lúc nào.
     """
     document = merge_documents([parsed])
-    document["generatedAt"] = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).strftime("%Y-%m-%dT%H:%M:%S+07:00")
+    document["information"]["generatedAt"] = datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).strftime("%Y-%m-%dT%H:%M:%S+07:00")
     return document
 
 
@@ -178,7 +252,12 @@ def _save_graph_document(parsed: ParsedFile) -> tuple[int, bool]:
         ) from exc
 
     # `save` tự bọc lỗi SQLAlchemy thành CriticalError/STORAGE_FAILURE.
-    record_id, replaced = catalog_repository.save(document)
+    record_id, replaced = catalog_repository.save(
+        nodes=document["nodes"],
+        edges=document["edges"],
+        information=document["information"],
+        diagnostics=document["diagnostics"],
+    )
 
     logger.info(
         "Đã lưu '%s' vào input_json: id=%d, ghi_đè=%s",

@@ -34,8 +34,6 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from fastapi import UploadFile
-
 from src.core import config
 from src.core.errors import (
     CriticalError,
@@ -87,38 +85,6 @@ class ValidatedUpload:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-async def read_upload_within_limit(file: UploadFile) -> bytes:
-    """Đọc file theo từng chunk và CHẶN NGAY khi vượt ngưỡng.
-
-    Không dùng `await file.read()` một phát: nó nạp trọn file vào RAM rồi mới
-    đo được kích thước — tức là kiểm tra giới hạn sau khi thiệt hại đã xảy ra.
-    Cũng không tin `Content-Length` do client khai.
-    """
-    buffer = bytearray()
-    limit = config.MAX_UPLOAD_BYTES
-    try:
-        while chunk := await file.read(config.UPLOAD_CHUNK_BYTES):
-            buffer.extend(chunk)
-            if len(buffer) > limit:
-                raise ValidationError(
-                    ErrorCode.FILE_TOO_LARGE,
-                    f"File vượt quá giới hạn {limit // 1024} KB. "
-                    "catalog-info.yaml hợp lệ chỉ nặng vài KB.",
-                    stage=Stage.L1_BASIC_INPUT,
-                    details={"limit_bytes": limit},
-                )
-    except ValidationError:
-        raise
-    except Exception as exc:  # đọc hỏng giữa chừng: mạng đứt, temp file lỗi
-        raise CriticalError(
-            ErrorCode.INTERNAL_ERROR,
-            "Không đọc được dữ liệu upload. Vui lòng thử lại.",
-            stage=Stage.L1_BASIC_INPUT,
-            log_message=f"Đọc UploadFile thất bại: {type(exc).__name__}",
-        ) from exc
-    return bytes(buffer)
-
-
 def layer1_basic_input(filename: str | None, content: bytes, content_type: str | None) -> str:
     """Kiểm tra ở mức 'có phải một file dùng được không'. Trả về tên file đã strip.
 
@@ -151,6 +117,15 @@ def layer1_basic_input(filename: str | None, content: bytes, content_type: str |
             f"Chỉ nhận file {' hoặc '.join(config.ALLOWED_EXTENSIONS)}.",
             stage=Stage.L1_BASIC_INPUT,
             details={"allowed_extensions": list(config.ALLOWED_EXTENSIONS)},
+        )
+
+    if len(content) > config.MAX_UPLOAD_BYTES:
+        raise ValidationError(
+            ErrorCode.FILE_TOO_LARGE,
+            f"File vượt quá giới hạn {config.MAX_UPLOAD_BYTES // 1024} KB. "
+            "catalog-info.yaml hợp lệ chỉ nặng vài KB.",
+            stage=Stage.L1_BASIC_INPUT,
+            details={"limit_bytes": config.MAX_UPLOAD_BYTES},
         )
 
     if not content:
@@ -482,7 +457,8 @@ def layer5_data(filename: str, document: dict[str, Any]) -> tuple[ParsedFile, li
         )
 
     warnings = [_to_issue(i, "warning", filename) for i in d.warnings]
-    return ParsedFile(filename, nodes, edges, root_id, d), warnings
+    spec_version = document.get("specVersion")
+    return ParsedFile(filename, nodes, edges, root_id, d, spec_version), warnings
 
 
 def _to_issue(issue: Any, severity: str, filename: str) -> Issue:

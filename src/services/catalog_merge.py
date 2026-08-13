@@ -22,7 +22,6 @@ import networkx as nx
 from src.services.catalog_to_graph import (
     OWNED_VIA_RELATION,
     SCHEMA_VERSION,
-    SPEC_VERSION,
     Diagnostics,
     ParsedFile,
     _edge_sort_key,
@@ -120,15 +119,17 @@ def merge_documents(parsed: list[ParsedFile]) -> dict[str, Any]:
     d.warnings.sort(key=_diag_key)
 
     return {
-        "schemaVersion": SCHEMA_VERSION,
-        "specVersion": SPEC_VERSION,
-        "scope": {
-            "kind": "merged",
-            "root": None,
-            "sources": sorted(sources, key=lambda s: s["file"]),
-        },
         "nodes": ordered_nodes,
         "edges": ordered_edges,
+        "information": {
+            "schemaVersion": SCHEMA_VERSION,
+            "specVersion": parsed[0].spec_version if parsed else None,
+            "scope": {
+                "kind": "merged",
+                "root": None,
+                "sources": sorted(sources, key=lambda s: s["file"]),
+            },
+        },
         "diagnostics": d.as_dict(),
     }
 

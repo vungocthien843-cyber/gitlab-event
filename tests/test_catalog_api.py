@@ -21,9 +21,10 @@ from sqlalchemy import text
 
 from src.core import config
 from src.core import db as core_db
+from src.core.store import store
 from src.main import app
-from src.services import catalog_repository, ingest
-from src.services.store import store
+from src.repositories import catalog_repository
+from src.services import ingest
 
 client = TestClient(app, raise_server_exceptions=False)
 
@@ -99,7 +100,15 @@ spec:
 
 def upload(name: str, text: str | bytes, content_type: str = "application/x-yaml"):
     data = text.encode("utf-8") if isinstance(text, str) else text
-    return client.post("/catalogs", files={"file": (name, data, content_type)})
+    return client.post("/api/v1/catalogs", files=[("files", (name, data, content_type))])
+
+
+def upload_many(pairs: list[tuple[str, str | bytes]]):
+    files = []
+    for name, yaml_text in pairs:
+        data = yaml_text.encode("utf-8") if isinstance(yaml_text, str) else yaml_text
+        files.append(("files", (name, data, "application/x-yaml")))
+    return client.post("/api/v1/catalogs", files=files)
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -173,8 +182,8 @@ class TestContract:
         lambda: upload("empty.yaml", ""),
         lambda: upload("broken.yaml", "specVersion: vsf-idp.io/v2\n"),
         lambda: upload("../evil.yaml", VALID_YAML),
-        lambda: client.get("/catalogs"),
-        lambda: client.delete("/catalogs/khong-ton-tai.yaml"),
+        lambda: client.get("/api/v1/catalogs"),
+        lambda: client.delete("/api/v1/catalogs/khong-ton-tai.yaml"),
         lambda: client.get("/duong-dan-khong-ton-tai"),
     ]
 
@@ -212,7 +221,7 @@ class TestContract:
         assert r.headers["X-Request-ID"] == r.json()["request_id"]
 
     def test_request_id_do_client_gui_duoc_giu_nguyen(self):
-        r = client.get("/catalogs", headers={"X-Request-ID": "trace-abc-123"})
+        r = client.get("/api/v1/catalogs", headers={"X-Request-ID": "trace-abc-123"})
         assert r.json()["request_id"] == "trace-abc-123"
 
 
@@ -234,11 +243,12 @@ class TestHappyPath:
         assert body["next_action"] == "proceed"
         assert body["stage"] == "done"
         assert body["issues"] == []
-        assert body["details"]["root"] == "component:order/order-service"
-        assert body["details"]["node_count"] > 0
+        result = body["details"]["results"][0]
+        assert result["root"] == "component:order/order-service"
+        assert result["node_count"] > 0
 
-        assert body["details"]["output_file"] == "order-service.json"
-        assert isinstance(body["details"]["record_id"], int)
+        assert result["output_file"] == "order-service.json"
+        assert isinstance(result["record_id"], int)
 
         graph = stored("order-service.yaml")
         assert graph is not None
@@ -254,11 +264,11 @@ class TestHappyPath:
 
         assert body["status"] == "warning"
         assert body["can_continue"] is True
-        assert body["details"]["replaced_existing"] is True
+        assert body["details"]["results"][0]["replaced_existing"] is True
         assert any(i["code"] == "FILE_REPLACED" for i in body["issues"])
         # Ghi ĐÈ đúng dòng cũ, không chèn thêm dòng mới: bảng phản ánh "các
         # catalog đang có", không phải nhật ký upload.
-        assert body["details"]["record_id"] == first["details"]["record_id"]
+        assert body["details"]["results"][0]["record_id"] == first["details"]["results"][0]["record_id"]
         assert row_count() == 1
 
 
@@ -285,7 +295,7 @@ class TestWarning:
 
     def test_file_co_warning_van_nam_trong_danh_sach(self):
         upload("warn.yaml", WARNING_YAML)
-        item = client.get("/catalogs").json()["details"]["items"][0]
+        item = client.get("/api/v1/catalogs").json()["details"]["items"][0]
         assert item["state"] == "valid_with_warnings"
         assert item["warning_count"] > 0
 
@@ -297,7 +307,7 @@ class TestWarning:
 
 class TestLayer1BasicInput:
     def test_khong_gui_file(self):
-        r = client.post("/catalogs")
+        r = client.post("/api/v1/catalogs")
         assert r.status_code == 422
         body = r.json()
         assert body["code"] == "NO_FILE"
@@ -306,30 +316,31 @@ class TestLayer1BasicInput:
 
     def test_file_rong(self):
         r = upload("empty.yaml", "")
-        assert r.status_code == 422
-        assert r.json()["code"] == "EMPTY_FILE"
+        assert r.status_code == 201
+        assert r.json()["details"]["results"][0]["code"] == "EMPTY_FILE"
 
     def test_sai_duoi_file(self):
         r = upload("catalog.txt", VALID_YAML)
-        assert r.status_code == 422
-        body = r.json()
-        assert body["code"] == "INVALID_FILE_TYPE"
-        assert body["details"]["allowed_extensions"] == [".yaml", ".yml"]
+        assert r.status_code == 201
+        result = r.json()["details"]["results"][0]
+        assert result["code"] == "INVALID_FILE_TYPE"
+        assert result["details"]["allowed_extensions"] == [".yaml", ".yml"]
 
     def test_file_qua_lon(self):
         r = upload("huge.yaml", "#" + "a" * (config.MAX_UPLOAD_BYTES + 1))
-        assert r.status_code == 422
-        assert r.json()["code"] == "FILE_TOO_LARGE"
+        assert r.status_code == 201
+        assert r.json()["details"]["results"][0]["code"] == "FILE_TOO_LARGE"
 
     def test_ten_file_qua_dai(self):
         r = upload("a" * 200 + ".yaml", VALID_YAML)
-        assert r.status_code == 422
-        assert r.json()["code"] == "FILENAME_TOO_LONG"
+        assert r.status_code == 201
+        assert r.json()["details"]["results"][0]["code"] == "FILENAME_TOO_LONG"
 
     def test_content_type_la_khong_bi_chan(self):
         """Content-Type do client khai không đáng tin -> không dùng để chặn."""
         r = upload("order-service.yaml", VALID_YAML, content_type="application/octet-stream")
         assert r.status_code == 201
+        assert r.json()["details"]["results"][0]["status"] == "success"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -352,10 +363,9 @@ class TestLayer2Security:
     )
     def test_ten_file_nguy_hiem_bi_tu_choi(self, name):
         r = upload(name, VALID_YAML)
-        assert r.status_code == 400
-        body = r.json()
-        assert body["code"] == "UNSAFE_FILENAME"
-        assert body["severity"] == "critical"
+        assert r.status_code == 201
+        result = r.json()["details"]["results"][0]
+        assert result["code"] == "UNSAFE_FILENAME"
 
     def test_path_traversal_khong_luu_duoc_gi(self):
         upload("../../evil.yaml", VALID_YAML)
@@ -363,21 +373,21 @@ class TestLayer2Security:
 
     def test_file_nhi_phan_doi_lot_yaml(self):
         r = upload("fake.yaml", b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
-        assert r.status_code == 400
-        body = r.json()
-        assert body["code"] == "CONTENT_TYPE_MISMATCH"
-        assert body["details"]["detected_format"] == "PNG"
+        assert r.status_code == 201
+        result = r.json()["details"]["results"][0]
+        assert result["code"] == "CONTENT_TYPE_MISMATCH"
+        assert result["details"]["detected_format"] == "PNG"
 
     def test_noi_dung_chua_nul_byte(self):
         r = upload("weird.yaml", VALID_YAML.encode() + b"\x00\x01")
-        assert r.status_code == 400
-        assert r.json()["code"] == "BINARY_CONTENT"
+        assert r.status_code == 201
+        assert r.json()["details"]["results"][0]["code"] == "BINARY_CONTENT"
 
     def test_tag_python_bi_chan(self):
         payload = "specVersion: !!python/object/apply:os.system ['echo hi']\n"
         r = upload("evil.yaml", payload)
-        assert r.status_code == 400
-        assert r.json()["code"] == "UNSAFE_YAML_TAG"
+        assert r.status_code == 201
+        assert r.json()["details"]["results"][0]["code"] == "UNSAFE_YAML_TAG"
 
     def test_yaml_bomb_bi_chan_truoc_khi_parse(self):
         """'Billion laughs': SafeLoader KHÔNG chặn được, layer 2 phải chặn."""
@@ -385,19 +395,19 @@ class TestLayer2Security:
         for i in range(1, 40):
             lines.append(f"a{i}: &a{i} [{', '.join([f'*a{i - 1}'] * 8)}]")
         r = upload("bomb.yaml", "\n".join(lines))
-        assert r.status_code == 400
-        assert r.json()["code"] == "YAML_EXPANSION_BOMB"
+        assert r.status_code == 201
+        assert r.json()["details"]["results"][0]["code"] == "YAML_EXPANSION_BOMB"
 
     def test_qua_nhieu_dong(self):
         r = upload("long.yaml", "# comment\n" * (config.MAX_YAML_LINES + 1))
-        assert r.status_code == 400
-        assert r.json()["code"] == "YAML_TOO_MANY_LINES"
+        assert r.status_code == 201
+        assert r.json()["details"]["results"][0]["code"] == "YAML_TOO_MANY_LINES"
 
     def test_long_nhau_qua_sau(self):
         deep = "".join(" " * (2 * i) + f"k{i}:\n" for i in range(config.MAX_YAML_DEPTH + 5))
         r = upload("deep.yaml", deep)
-        assert r.status_code == 400
-        assert r.json()["code"] == "YAML_TOO_DEEP"
+        assert r.status_code == 201
+        assert r.json()["details"]["results"][0]["code"] == "YAML_TOO_DEEP"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -408,19 +418,21 @@ class TestLayer2Security:
 class TestLayer3Integrity:
     def test_khong_phai_utf8(self):
         r = upload("latin.yaml", "specVersion: caf\xe9".encode("latin-1"))
-        assert r.status_code == 422
-        assert r.json()["code"] == "INVALID_ENCODING"
+        assert r.status_code == 201
+        assert r.json()["details"]["results"][0]["code"] == "INVALID_ENCODING"
 
     def test_bom_utf8_van_doc_duoc(self):
         r = upload("bom.yaml", b"\xef\xbb\xbf" + VALID_YAML.encode("utf-8"))
         assert r.status_code == 201
+        assert r.json()["details"]["results"][0]["status"] == "success"
 
     def test_sai_cu_phap_yaml(self):
         r = upload("broken.yaml", "spec:\n  - a\n b: [unclosed\n")
-        assert r.status_code == 422
+        assert r.status_code == 201
         body = r.json()
-        assert body["code"] == "YAML_SYNTAX"
-        assert body["stage"] == "layer3_file_integrity"
+        result = body["details"]["results"][0]
+        assert result["code"] == "YAML_SYNTAX"
+        assert result["stage"] == "layer3_file_integrity"
         assert len(body["issues"]) == 1
 
     def test_key_trung_bi_tu_choi(self):
@@ -428,13 +440,13 @@ class TestLayer3Integrity:
         key trùng gần như luôn là dấu hiệu merge nhầm."""
         dup = VALID_YAML.replace("  domain: commerce", "  domain: commerce\n  domain: retail")
         r = upload("dup.yaml", dup)
-        assert r.status_code == 422
-        assert r.json()["code"] == "DUPLICATE_KEY"
+        assert r.status_code == 201
+        assert r.json()["details"]["results"][0]["code"] == "DUPLICATE_KEY"
 
     def test_root_khong_phai_mapping(self):
         r = upload("list.yaml", "- a\n- b\n")
-        assert r.status_code == 422
-        assert r.json()["code"] == "INVALID_STRUCTURE"
+        assert r.status_code == 201
+        assert r.json()["details"]["results"][0]["code"] == "INVALID_STRUCTURE"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -445,17 +457,18 @@ class TestLayer3Integrity:
 class TestLayer4Schema:
     def test_thieu_section_bat_buoc(self):
         r = upload("partial.yaml", "specVersion: vsf-idp.io/v2\n")
-        assert r.status_code == 422
+        assert r.status_code == 201
         body = r.json()
-        assert body["code"] == "MISSING_REQUIRED_SECTION"
-        assert body["stage"] == "layer4_schema"
-        assert set(body["details"]["missing_sections"]) == {"metadata", "spec"}
+        result = body["details"]["results"][0]
+        assert result["code"] == "MISSING_REQUIRED_SECTION"
+        assert result["stage"] == "layer4_schema"
+        assert set(result["details"]["missing_sections"]) == {"metadata", "spec"}
 
     def test_section_sai_kieu(self):
         r = upload("wrong.yaml", "specVersion: vsf-idp.io/v2\nmetadata: hello\nspec: 123\n")
-        assert r.status_code == 422
+        assert r.status_code == 201
         body = r.json()
-        assert body["code"] == "INVALID_STRUCTURE"
+        assert body["details"]["results"][0]["code"] == "INVALID_STRUCTURE"
         assert {i["location"] for i in body["issues"]} == {"metadata", "spec"}
 
 
@@ -468,27 +481,35 @@ class TestLayer5Data:
     def test_gom_het_loi_thay_vi_dung_o_loi_dau_tien(self):
         """Người sửa YAML cần thấy cả 5 lỗi trong một lần, không phải upload 5 lần."""
         r = upload("invalid.yaml", INVALID_DATA_YAML)
-        assert r.status_code == 422
+        assert r.status_code == 201
 
         body = r.json()
-        assert body["code"] == "SCHEMA_VALIDATION_FAILED"
-        assert body["stage"] == "layer5_data"
+        result = body["details"]["results"][0]
+        assert result["code"] == "SCHEMA_VALIDATION_FAILED"
+        assert result["stage"] == "layer5_data"
 
         errors = [i for i in body["issues"] if i["severity"] == "error"]
         assert len(errors) >= 2
         assert {"INVALID_FORMAT", "MISSING_TECHLEAD"} <= {i["code"] for i in errors}
         assert all(i["location"] for i in errors), "mỗi lỗi phải chỉ đúng vị trí trong YAML"
 
-    def test_sai_specversion(self):
+    def test_specversion_khac_van_duoc_chap_nhan(self):
+        """Không còn so sánh cứng specVersion — chỉ cần field có mặt, giá trị
+        khác 'vsf-idp.io/v2' vẫn được lưu nguyên văn, không bị chặn."""
         r = upload("old.yaml", VALID_YAML.replace("vsf-idp.io/v2", "vsf-idp.io/v1"))
-        assert r.status_code == 422
-        assert any(i["code"] == "UNSUPPORTED_VERSION" for i in r.json()["issues"])
+        assert r.status_code == 201
+        body = r.json()
+        assert body["details"]["results"][0]["status"] == "success"
+        assert not any(i["code"] == "UNSUPPORTED_VERSION" for i in body["issues"])
+
+        graph = stored("old.yaml")
+        assert graph["information"]["specVersion"] == "vsf-idp.io/v1"
 
     def test_file_loi_khong_luu_db_va_khong_vao_kho(self):
         """Bản cũ ghi JSON kể cả khi parse còn lỗi -> kho tích luỹ rác."""
         upload("invalid.yaml", INVALID_DATA_YAML)
         assert row_count() == 0
-        assert client.get("/catalogs").json()["details"]["total"] == 0
+        assert client.get("/api/v1/catalogs").json()["details"]["total"] == 0
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -513,17 +534,17 @@ class TestHumanInTheLoop:
         upload("a.yaml", self.PROVIDER_A)
         r = upload("b.yaml", self.PROVIDER_B)
 
-        assert r.status_code == 409
+        assert r.status_code == 201
         body = r.json()
-        assert body["code"] == "NEEDS_HUMAN_REVIEW"
-        assert body["next_action"] == "human_review"
-        assert body["can_continue"] is False
+        result = body["details"]["results"][0]
+        assert result["code"] == "NEEDS_HUMAN_REVIEW"
+        assert body["details"]["failed"] == 1
         assert body["issues"][0]["code"] == "AMBIGUOUS_OWNER"
 
     def test_tranh_chap_khong_lam_hong_du_lieu_da_co(self):
         upload("a.yaml", self.PROVIDER_A)
         upload("b.yaml", self.PROVIDER_B)
-        assert client.get("/catalogs").json()["details"]["total"] == 1
+        assert client.get("/api/v1/catalogs").json()["details"]["total"] == 1
         assert stored("b.yaml") is None
 
     def test_upload_lai_chinh_no_khong_bi_coi_la_tranh_chap(self):
@@ -546,7 +567,7 @@ class TestListAndSearch:
                                               topology="\n    - ref: system:order/order-system"))
 
     def test_liet_ke_day_du(self):
-        d = client.get("/catalogs").json()["details"]
+        d = client.get("/api/v1/catalogs").json()["details"]
         assert d["total"] == 3
         assert d["returned"] == 3
         assert [i["file"] for i in d["items"]] == [
@@ -554,7 +575,7 @@ class TestListAndSearch:
         ]
 
     def test_moi_dong_du_thong_tin_de_render_bang(self):
-        item = client.get("/catalogs").json()["details"]["items"][0]
+        item = client.get("/api/v1/catalogs").json()["details"]["items"][0]
         for field in ("file", "root", "state", "error_count", "warning_count",
                       "node_count", "edge_count", "size_bytes", "uploaded_at",
                       "output_file", "record_id"):
@@ -563,28 +584,28 @@ class TestListAndSearch:
         assert isinstance(item["record_id"], int)
 
     def test_tim_kiem_theo_chuoi_con(self):
-        d = client.get("/catalogs", params={"q": "order"}).json()["details"]
+        d = client.get("/api/v1/catalogs", params={"q": "order"}).json()["details"]
         assert d["returned"] == 2
         assert d["total"] == 3
         assert all("order" in i["file"] for i in d["items"])
 
     def test_tim_kiem_khong_phan_biet_hoa_thuong(self):
-        assert client.get("/catalogs", params={"q": "ORDER"}).json()["details"]["returned"] == 2
+        assert client.get("/api/v1/catalogs", params={"q": "ORDER"}).json()["details"]["returned"] == 2
 
     def test_tim_khong_thay_van_la_success_voi_danh_sach_rong(self):
         """Không tìm thấy KHÔNG phải lỗi — câu truy vấn đã chạy đúng."""
-        body = client.get("/catalogs", params={"q": "khong-co-gi"}).json()
+        body = client.get("/api/v1/catalogs", params={"q": "khong-co-gi"}).json()
         assert body["status"] == "success"
         assert body["details"]["items"] == []
         assert "khong-co-gi" in body["message"]
 
     def test_diagnostics_chi_tra_khi_duoc_yeu_cau(self):
-        assert client.get("/catalogs").json()["details"]["items"][0]["diagnostics"] is None
-        with_diag = client.get("/catalogs", params={"include": "diagnostics"}).json()
+        assert client.get("/api/v1/catalogs").json()["details"]["items"][0]["diagnostics"] is None
+        with_diag = client.get("/api/v1/catalogs", params={"include": "diagnostics"}).json()
         assert with_diag["details"]["items"][0]["diagnostics"] is not None
 
     def test_include_sai_gia_tri_bi_tu_choi(self):
-        r = client.get("/catalogs", params={"include": "everything"})
+        r = client.get("/api/v1/catalogs", params={"include": "everything"})
         assert r.status_code == 422
         assert r.json()["severity"] == "validation"
 
@@ -599,18 +620,18 @@ class TestDelete:
         upload("order-service.yaml", VALID_YAML)
         assert stored("order-service.yaml") is not None
 
-        r = client.delete("/catalogs/order-service.yaml")
+        r = client.delete("/api/v1/catalogs/order-service.yaml")
         assert r.status_code == 200
 
         body = r.json()
         assert body["status"] == "success"
         assert body["details"]["remaining"] == 0
         assert stored("order-service.yaml") is None
-        assert client.get("/catalogs").json()["details"]["total"] == 0
+        assert client.get("/api/v1/catalogs").json()["details"]["total"] == 0
 
     def test_xoa_file_khong_ton_tai_kem_goi_y(self):
         upload("order-service.yaml", VALID_YAML)
-        r = client.delete("/catalogs/order-servic.yaml")
+        r = client.delete("/api/v1/catalogs/order-servic.yaml")
 
         assert r.status_code == 422
         body = r.json()
@@ -619,26 +640,26 @@ class TestDelete:
 
     def test_goi_y_khi_go_tat(self):
         upload("order-service.yaml", VALID_YAML)
-        body = client.delete("/catalogs/order").json()
+        body = client.delete("/api/v1/catalogs/order").json()
         assert body["details"]["suggestions"] == ["order-service.yaml"]
 
     def test_goi_y_khi_go_sai_chinh_ta(self):
         """Gõ thiếu/nhầm một ký tự là lúc cần gợi ý nhất — khớp chuỗi con không lo được."""
         upload("order-service.yaml", VALID_YAML)
-        body = client.delete("/catalogs/order-servic.yaml").json()
+        body = client.delete("/api/v1/catalogs/order-servic.yaml").json()
         assert body["details"]["suggestions"] == ["order-service.yaml"]
 
     def test_khong_goi_y_bua_khi_khong_co_gi_giong(self):
         upload("order-service.yaml", VALID_YAML)
-        body = client.delete("/catalogs/zzzzzzzz.yaml").json()
+        body = client.delete("/api/v1/catalogs/zzzzzzzz.yaml").json()
         assert body["details"]["suggestions"] == []
 
     def test_xoa_chi_anh_huong_dung_mot_file(self):
         upload("a.yaml", make_yaml(sid="order-service"))
         upload("b.yaml", make_yaml(sid="payment-service", namespace="payment",
                                    system="payment-system"))
-        client.delete("/catalogs/a.yaml")
-        assert [i["file"] for i in client.get("/catalogs").json()["details"]["items"]] == ["b.yaml"]
+        client.delete("/api/v1/catalogs/a.yaml")
+        assert [i["file"] for i in client.get("/api/v1/catalogs").json()["details"]["items"]] == ["b.yaml"]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -662,11 +683,11 @@ class TestPersistence:
         assert upload("warn.yaml", self.WARN_KHAC).status_code == 201
 
         store.clear()
-        assert client.get("/catalogs").json()["details"]["total"] == 0
+        assert client.get("/api/v1/catalogs").json()["details"]["total"] == 0
 
         assert store.load_from_db() == 2
 
-        items = client.get("/catalogs").json()["details"]["items"]
+        items = client.get("/api/v1/catalogs").json()["details"]["items"]
         assert [i["file"] for i in items] == ["order-service.yaml", "warn.yaml"]
 
         khoi_phuc = {i["file"]: i for i in items}
@@ -681,11 +702,11 @@ class TestPersistence:
     def test_canh_bao_chi_tiet_van_con_sau_khi_nap_lai(self):
         """Diagnostics nằm trong JSON nên phải sống sót nguyên vẹn."""
         upload("warn.yaml", WARNING_YAML)
-        goc = client.get("/catalogs", params={"include": "diagnostics"}).json()
+        goc = client.get("/api/v1/catalogs", params={"include": "diagnostics"}).json()
 
         store.clear()
         store.load_from_db()
-        sau = client.get("/catalogs", params={"include": "diagnostics"}).json()
+        sau = client.get("/api/v1/catalogs", params={"include": "diagnostics"}).json()
 
         assert sau["details"]["items"][0]["diagnostics"] == \
             goc["details"]["items"][0]["diagnostics"]
@@ -694,11 +715,11 @@ class TestPersistence:
         """Kích thước file YAML gốc không phải nội dung của JSON nên không lưu.
         Trả null trung thực hơn là bịa một con số."""
         upload("order-service.yaml", VALID_YAML)
-        assert client.get("/catalogs").json()["details"]["items"][0]["size_bytes"] > 0
+        assert client.get("/api/v1/catalogs").json()["details"]["items"][0]["size_bytes"] > 0
 
         store.clear()
         store.load_from_db()
-        item = client.get("/catalogs").json()["details"]["items"][0]
+        item = client.get("/api/v1/catalogs").json()["details"]["items"][0]
         assert item["size_bytes"] is None
         assert item["uploaded_at"] is not None  # lấy được từ generatedAt
 
@@ -710,7 +731,7 @@ class TestPersistence:
         store.load_from_db()
 
         body = upload("order-service.yaml", VALID_YAML).json()
-        assert body["details"]["replaced_existing"] is True
+        assert body["details"]["results"][0]["replaced_existing"] is True
         assert row_count() == 1
 
 
@@ -756,7 +777,7 @@ class TestFailSafe:
         r = upload("order-service.yaml", VALID_YAML)
         assert r.status_code == 500
         assert r.json()["code"] == "STORAGE_FAILURE"
-        assert client.get("/catalogs").json()["details"]["total"] == 0
+        assert client.get("/api/v1/catalogs").json()["details"]["total"] == 0
 
     def test_db_hong_van_dung_contract_va_khong_lo_dsn(self, monkeypatch):
         """DB chết là tình huống ta HIỂU RÕ -> STORAGE_FAILURE, không phải
@@ -784,7 +805,7 @@ class TestFailSafe:
         assert body["next_action"] == "contact_support"
         assert "sieu-bi-mat" not in json.dumps(body)
         assert "db.internal" not in json.dumps(body)
-        assert client.get("/catalogs").json()["details"]["total"] == 0
+        assert client.get("/api/v1/catalogs").json()["details"]["total"] == 0
 
     def test_route_khong_ton_tai_van_dung_contract(self):
         r = client.get("/khong-co-duong-nay")
@@ -792,9 +813,42 @@ class TestFailSafe:
         assert r.json()["code"] == "HTTP_404"
 
     def test_sai_method_van_dung_contract(self):
-        r = client.put("/catalogs")
+        r = client.put("/api/v1/catalogs")
         assert r.status_code == 405
         assert r.json()["status"] == "error"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Upload nhiều file cùng lúc
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestBatchUpload:
+    def test_nhieu_file_hop_le_deu_duoc_luu(self):
+        r = upload_many([
+            ("a.yaml", make_yaml(sid="order-service")),
+            ("b.yaml", make_yaml(sid="payment-service", namespace="payment",
+                                  system="payment-system")),
+        ])
+        assert r.status_code == 201
+        body = r.json()
+        assert body["details"]["total"] == 2
+        assert body["details"]["succeeded"] == 2
+        assert body["details"]["failed"] == 0
+        assert row_count() == 2
+
+    def test_1_file_loi_khong_chan_cac_file_con_lai(self):
+        r = upload_many([
+            ("good.yaml", VALID_YAML),
+            ("bad.yaml", INVALID_DATA_YAML),
+        ])
+        assert r.status_code == 201
+        body = r.json()
+        assert body["details"]["succeeded"] == 1
+        assert body["details"]["failed"] == 1
+        assert stored("good.yaml") is not None
+        assert stored("bad.yaml") is None
+        assert any(i["source"] == "bad.yaml" for i in body["issues"])
 
 
 class TestHealth:
