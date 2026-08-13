@@ -19,6 +19,7 @@ spec:
     Quản lý vòng đời tài khoản (mở/khoá/đóng), số dư và sổ cái nội bộ. Là nguồn
     sự thật duy nhất cho số dư tài khoản, được các service khác gọi vào để
     trừ/cộng tiền.
+    tây tiến đoàn binh không mọc tóc, quân xanh màu lá giữ oai hùm
 
   owners
     members:

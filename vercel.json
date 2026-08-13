@@ -11,11 +11,5 @@
       "src": "/(.*)",
       "dest": "src/main.py"
     }
-  ],
-  "crons": [
-    {
-      "path": "/api/cron/renew-mail",
-      "schedule": "0 * * * *"
-    }
   ]
 }
