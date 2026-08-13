@@ -15,6 +15,7 @@ spec:
   id: banking-api-gateway
   name: Banking API Gateway
   description: >-
+    Râu hùm hàm én mày ngài, vai năm tấc rộng thân mười thước cao
     Cổng vào duy nhất cho toàn bộ client bên ngoài (mobile app, web, đối tác
     open banking). Xử lý xác thực, rate-limit tập trung và định tuyến request
     tới các service nội bộ phía sau.

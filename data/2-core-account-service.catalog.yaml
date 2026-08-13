@@ -5,16 +5,17 @@ specVersion: vsf-idp.io/v2
 # type: service. Dùng làm form mẫu cho một core service có datastore + event.
 # ═══════════════════════════════════════════════════════════════════════════
 
-metadata
+metadata:
   domain: Core Banking
   system: banking-core
   namespace: account
 
-spec
+spec:
   type: service
   id: core-account-service
   name: Core Account Service
   description: >-
+    Đầu lòng hai ả tố nga, thúy kiều là chị em là thúy vân
     Quản lý vòng đời tài khoản (mở/khoá/đóng), số dư và sổ cái nội bộ. Là nguồn
     sự thật duy nhất cho số dư tài khoản, được các service khác gọi vào để
     trừ/cộng tiền.
