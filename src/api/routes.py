@@ -18,14 +18,10 @@ from fastapi import (
     UploadFile,
     status,
 )
-from sse_starlette.sse import EventSourceResponse
 
-from src.agents.graph import agent
-from src.core.broadcaster import broadcaster
-from src.core.config import get_settings
 from src.core.logging import get_request_id
 from src.models import schemas
-from src.models.schemas import ApiResponse, ChatRequest, ChatResponse
+from src.models.schemas import ApiResponse
 from src.services import github_events, ingest
 
 # Không gọi load_dotenv() ở đây: app/core/config.py đã nạp .env lúc import (và
@@ -120,23 +116,6 @@ def delete_catalog(filename: str, response: Response) -> ApiResponse:
     response.status_code = status.HTTP_200_OK
     return ingest.delete_catalog(unquote(filename), request_id=get_request_id())
 
-
-@router.post("/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest) -> ChatResponse:
-    """Chat vá»›i AI agent."""
-    try:
-        result = await agent.ainvoke({"query": request.message})
-        return ChatResponse(
-            response=result.get("response", ""),
-            analysis=result.get("analysis", ""),
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@router.get("/status")
-async def agent_status():
-    """Kiểm tra trạng thái agent."""
-    return {"status": "ready", "agent": "LangGraph Agent v1.0"}
 
 
 # ==========================================

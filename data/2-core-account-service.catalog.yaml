@@ -5,12 +5,12 @@ specVersion: vsf-idp.io/v2
 # type: service. Dùng làm form mẫu cho một core service có datastore + event.
 # ═══════════════════════════════════════════════════════════════════════════
 
-metadata:
+metadata
   domain: Core Banking
   system: banking-core
   namespace: account
 
-spec:
+spec
   type: service
   id: core-account-service
   name: Core Account Service
@@ -19,7 +19,7 @@ spec:
     sự thật duy nhất cho số dư tài khoản, được các service khác gọi vào để
     trừ/cộng tiền.
 
-  owners:
+  owners
     members:
       - user: v.anhpq8@vinsmartfuture.tech
         role: techlead
