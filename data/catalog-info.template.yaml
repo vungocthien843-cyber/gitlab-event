@@ -1,0 +1,105 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# TEMPLATE CHUẨN — catalog-info.yaml
+# Đây là file mẫu tham chiếu chính thức cho mọi service khai báo trong IDP.
+# Đã chạy qua parser (catalog_to_graph.py) — 0 lỗi, 1 warning (AWAITING_SPEC_INGEST,
+# là trạng thái bình thường, không phải lỗi). Copy file này rồi sửa giá trị.
+# ═══════════════════════════════════════════════════════════════════════════
+
+# specVersion — cố định, luôn là giá trị này.
+specVersion: vsf-idp.io/v2
+
+metadata:
+  # domain — domain nghiệp vụ / P&L chủ quản. Free-text, cho phép hoa/space,
+  # tối đa 128 ký tự, KHÔNG control character.
+  domain: Payment & Loyalty
+
+  # system — bounded context. Slug: ^[a-z][a-z0-9-]*$ (chữ thường, số, gạch ngang).
+  # Kết hợp với spec.id -> service_key = "{system}.{id}".
+  system: banking-core
+
+  # namespace — K8s/IAM scope. Cùng format slug với system.
+  namespace: payment
+
+spec:
+  # type — 1 trong 14 giá trị. service/gateway CÓ API surface (cần providesApis).
+  # 12 loại còn lại (worker, batch, job, library, website, mobile-app,
+  # data-pipeline, function, plugin, tool, documentation, other) KHÔNG có API
+  # surface — khai providesApis cho chúng sẽ bị lỗi UNEXPECTED_PROVIDES_API.
+  type: service
+
+  # id — định danh trong system. Slug: ^[a-z][a-z0-9-]*$.
+  id: payment-transfer-service
+
+  # name — tên hiển thị, free-text, KHÔNG control character.
+  name: Payment Transfer Service
+
+  # description — tuỳ chọn, duy nhất trong spec không bắt buộc.
+  description: >-
+    Xử lý lệnh chuyển tiền giữa tài khoản nội bộ. Gọi Core Account Service để
+    trừ/cộng số dư, gọi Fraud Detection Service để kiểm tra rủi ro, và phát sự
+    kiện giao dịch cho các consumer downstream.
+
+  owners:
+    # members — ít nhất 1 phần tử, và ít nhất 1 người role techlead.
+    # role chỉ nhận 1 trong 3: techlead | maintainer | member.
+    members:
+      - user: v.linhpt3@vinsmartfuture.tech
+        role: techlead
+      - user: v.hoangnv12@vinsmartfuture.tech
+        role: maintainer
+      - user: v.thuyntt5@vinsmartfuture.tech
+        role: member
+
+  review:
+    # branch — nhánh đích phải qua spec-review trước khi merge.
+    branch: "main"
+
+  # topology — danh sách phụ thuộc. Mỗi entry: ref bắt buộc, protocol/reason
+  # tuỳ chọn. 7 kind hợp lệ trong ref, liệt kê đủ cả 7 bên dưới làm mẫu.
+  topology:
+
+    # ── system: component này thuộc system nào ─────────────────────────────
+    # Bắt buộc nên có. Namespace/name trong ref PHẢI khớp metadata.system.
+    - ref: system:payment/banking-core
+      reason: Component này thuộc system banking-core
+
+    # ── providesApis: API mà CHÍNH component này expose ra ngoài ───────────
+    # Chỉ khai khi type là service/gateway. Name nên khớp spec.id.
+    - ref: providesApis:payment/payment-transfer-service
+      protocol: REST
+      reason: Expose endpoint /transfer, /transfer/{id}/status
+
+    # ── consumesApis: API của service KHÁC mà component này gọi vào ────────
+    # Có thể khai nhiều dòng, mỗi dòng một API downstream khác nhau.
+    - ref: consumesApis:account/core-account-service
+      protocol: REST
+      reason: Trừ/cộng số dư tài khoản nguồn và đích
+
+    - ref: consumesApis:risk/fraud-detection-service
+      protocol: gRPC
+      reason: Chấm điểm rủi ro giao dịch trước khi cho phép chuyển tiền
+
+    # ── component: phụ thuộc component khác (sibling), KHÔNG qua API ───────
+    - ref: component:notification/notification-worker
+      reason: Worker nghe sự kiện giao dịch để gửi thông báo cho khách hàng
+
+    # ── resource: hạ tầng — database, cache, message broker... ─────────────
+    - ref: resource:payment/payment-postgres
+      reason: Datastore lưu trạng thái giao dịch, idempotency key
+
+    - ref: resource:platform/kafka
+      reason: Message broker dùng chung toàn platform
+
+    # ── publishesTo: Kafka topic mà component này publish event vào ────────
+    - ref: publishesTo:payment/payment.transfer-events
+      protocol: Kafka
+      reason: Phát sự kiện transfer_initiated, transfer_completed, transfer_failed
+
+    - ref: publishesTo:audit/audit.transaction-log
+      protocol: Kafka
+      reason: Ghi log audit mọi giao dịch theo Thông tư 50/2024/TT-NHNN
+
+    # ── consumesFrom: Kafka topic mà component này nghe/subscribe ──────────
+    - ref: consumesFrom:payment/payment.refund-requested
+      protocol: Kafka
+      reason: Nghe yêu cầu hoàn tiền để xử lý giao dịch đảo chiều
