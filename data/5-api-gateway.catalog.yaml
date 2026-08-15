@@ -1,0 +1,59 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# MOCK CHUẨN 7 — API Gateway
+# services/gateway/catalog-info.yaml theo master-catalog. Port 8222 — điểm
+# vào duy nhất cho client, định tuyến tới auth/transaction/loan.
+# LƯU Ý: khác id với "banking-api-gateway" (namespace gateway) trong bộ
+# standard6 — đây là 2 gateway riêng, không trùng.
+# ═══════════════════════════════════════════════════════════════════════════
+
+specVersion: vsf-idp.io/v2
+
+metadata:
+  domain: Online Banking
+  system: online-banking
+  namespace: banking
+
+spec:
+  type: gateway
+  id: api-gateway
+  name: API Gateway
+  description: >-
+    Cổng vào duy nhất cho toàn bộ client (port 8222). Định tuyến request tới
+    auth-service, transaction-service, loan-service phía sau; tích hợp
+    distributed tracing để theo dõi luồng gọi liên service.
+
+  owners:
+    members:
+      - user: v.minhtq7@vinsmartfuture.tech
+        role: techlead
+      - user: v.phuongvt2@vinsmartfuture.tech
+        role: maintainer
+
+  review:
+    branch: "main"
+
+  topology:
+    - ref: system:banking/online-banking
+      reason: Component này thuộc system online-banking
+
+    - ref: providesApis:banking/api-gateway
+      protocol: REST
+      reason: Cổng vào công khai (port 8222) cho toàn bộ client bên ngoài
+
+    - ref: consumesApis:banking/auth-service
+      protocol: REST
+      reason: Định tuyến request xác thực vào Auth Service
+
+    - ref: consumesApis:banking/transaction-service
+      protocol: REST
+      reason: Định tuyến request giao dịch vào Transaction Service
+
+    - ref: consumesApis:banking/loan-service
+      protocol: REST
+      reason: Định tuyến request hồ sơ vay vào Loan Service
+
+    - ref: component:banking/discovery-service
+      reason: Tra cứu địa chỉ service qua Eureka để định tuyến động
+
+    - ref: resource:platform/zipkin
+      reason: Distributed tracing cho toàn bộ request đi qua gateway

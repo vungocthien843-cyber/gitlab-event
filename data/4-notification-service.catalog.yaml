@@ -1,0 +1,52 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# MOCK CHUẨN 6 — Notification Service
+# services/notification/catalog-info.yaml theo master-catalog. Port 10050,
+# type: worker (không có API surface). Khớp đúng bảng topics của master:
+# consumer của cả "transaction-events" lẫn "account-events".
+# ═══════════════════════════════════════════════════════════════════════════
+
+specVersion: vsf-idp.io/v2
+
+metadata:
+  domain: Online Banking
+  system: online-banking
+  namespace: banking
+
+spec:
+  type: worker
+  id: notification-service
+  name: Notification Service
+  description: >-
+    Consumer nền, nghe sự kiện giao dịch và tài khoản để gửi email/SMS cho
+    khách hàng. Không expose API — chỉ tiêu thụ event từ Kafka.
+
+  owners:
+    members:
+      - user: v.hangnt10@vinsmartfuture.tech
+        role: techlead
+      - user: v.namdv3@vinsmartfuture.tech
+        role: maintainer
+
+  review:
+    branch: "main"
+
+  topology:
+    - ref: system:banking/online-banking
+      reason: Component này thuộc system online-banking
+
+    - ref: resource:banking/postgres
+      reason: Lưu lịch sử gửi và trạng thái delivery của từng thông báo
+
+    - ref: resource:banking/maildev
+      reason: Test email UI/SMTP trong môi trường dev, chưa dùng SMTP thật
+
+    - ref: resource:platform/kafka
+      reason: Message broker dùng chung toàn platform
+
+    - ref: consumesFrom:banking/transaction-events
+      protocol: Kafka
+      reason: Nghe sự kiện giao dịch để gửi thông báo biến động cho khách hàng
+
+    - ref: consumesFrom:banking/account-events
+      protocol: Kafka
+      reason: Nghe sự kiện tài khoản để gửi thông báo liên quan số dư

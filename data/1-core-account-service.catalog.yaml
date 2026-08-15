@@ -61,8 +61,11 @@ spec:
       reason: Kiểm tra thông tin định danh khi mở tài khoản mới
 
     # ── component: phụ thuộc sibling, không qua API ─────────────────────────
-    - ref: component:notification/notification-worker
-      reason: Sibling — worker nghe event của account để gửi thông báo biến động số dư
+    # Trỏ tới hệ lõi cũ (mainframe) — namespace 'legacy' không có file catalog
+    # nào trong hệ thống này nên mãi mãi là stub, không rủi ro tạo cycle dù
+    # sau này thêm bao nhiêu service khác.
+    - ref: component:legacy/core-banking-mainframe
+      reason: Đọc dữ liệu lịch sử tài khoản từ hệ lõi cũ qua adapter, chưa migrate hết
 
     # ── resource: hạ tầng (database, cache, broker...) ──────────────────────
     - ref: resource:account/account-postgres-primary

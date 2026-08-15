@@ -1,0 +1,35 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# MOCK CHUẨN 8 — Discovery Service
+# services/discovery/catalog-info.yaml theo master-catalog. Port 8761.
+# type: other (Eureka service registry) — không có API surface theo nghĩa
+# business, chỉ đăng ký/tra cứu địa chỉ service. Topology tối giản, không
+# phụ thuộc resource nào (Eureka lưu registry trong bộ nhớ).
+# ═══════════════════════════════════════════════════════════════════════════
+
+specVersion: vsf-idp.io/v2
+
+metadata:
+  domain: Platform Engineering
+  system: online-banking
+  namespace: banking
+
+spec:
+  type: other
+  id: discovery-service
+  name: Discovery Service
+  description: >-
+    Service registry (Eureka) — nơi mọi service đăng ký địa chỉ khi khởi
+    động, để API Gateway và các service khác tra cứu và định tuyến động.
+    Không lưu trạng thái ra ngoài, registry giữ trong bộ nhớ.
+
+  owners:
+    members:
+      - user: v.baonp6@vinsmartfuture.tech
+        role: techlead
+
+  review:
+    branch: "main"
+
+  topology:
+    - ref: system:banking/online-banking
+      reason: Component này thuộc system online-banking
