@@ -1,0 +1,81 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# MOCK CHUẨN 2/2 — Card Management Service
+# Theo đúng khung catalog-info.template.yaml. Đủ cả 7 kind trong topology.
+# Liên kết ngược với mock 1: card gọi API account để trừ tiền, khớp với
+# component:card/card-management-service mà file account đã khai dependsOn.
+# ═══════════════════════════════════════════════════════════════════════════
+
+specVersion: vsf-idp.io/v2
+
+metadata:
+  domain: Core Banking
+  system: banking-core
+  namespace: card
+
+spec:
+  # type: service -> CÓ API surface.
+  type: service
+
+  id: card-management-service
+  name: Card Management Service
+
+  description: >-
+    Quản lý vòng đời thẻ ngân hàng — phát hành, khoá/mở khoá, đổi PIN, và xử
+    lý giao dịch quẹt thẻ. Gọi Core Account Service để trừ tiền khi giao
+    dịch thành công.
+
+  owners:
+    members:
+      - user: v.longnt7@vinsmartfuture.tech
+        role: techlead
+      - user: v.huongdt3@vinsmartfuture.tech
+        role: maintainer
+      - user: v.khoapham2@vinsmartfuture.tech
+        role: member
+
+  review:
+    branch: "main"
+
+  topology:
+
+    # ── system: thuộc system nào, khớp metadata.system ──────────────────────
+    - ref: system:card/banking-core
+      reason: Component này thuộc system banking-core
+
+    # ── providesApis: API chính mình expose, name khớp spec.id ─────────────
+    - ref: providesApis:card/card-management-service
+      protocol: REST
+      reason: Expose endpoint /cards, /cards/{id}/block, /cards/{id}/swipe
+
+    # ── consumesApis: API của service khác mà mình gọi vào ─────────────────
+    - ref: consumesApis:account/core-account-service
+      protocol: REST
+      reason: Trừ tiền tài khoản khi giao dịch quẹt thẻ thành công
+
+    - ref: consumesApis:risk/fraud-detection-service
+      protocol: gRPC
+      reason: Chấm điểm rủi ro giao dịch thẻ trước khi cho phép trừ tiền
+
+    # ── component: phụ thuộc sibling, không qua API ─────────────────────────
+    - ref: component:notification/notification-worker
+      reason: Worker nghe sự kiện quẹt thẻ để gửi thông báo cho khách hàng
+
+    # ── resource: hạ tầng (database, cache, broker...) ──────────────────────
+    - ref: resource:card/card-postgres
+      reason: Datastore lưu thông tin thẻ và lịch sử giao dịch quẹt thẻ
+
+    - ref: resource:card/card-redis-cache
+      reason: Cache trạng thái thẻ (active/blocked) để giảm tải truy vấn
+
+    - ref: resource:platform/kafka
+      reason: Message broker dùng chung toàn platform
+
+    # ── publishesTo: topic mà mình publish event vào ────────────────────────
+    - ref: publishesTo:card/card.swipe-events
+      protocol: Kafka
+      reason: Phát sự kiện mỗi khi có giao dịch quẹt thẻ để hệ thống khác nghe
+
+    # ── consumesFrom: topic mà mình nghe/subscribe ──────────────────────────
+    - ref: consumesFrom:account/account.balance-changed
+      protocol: Kafka
+      reason: Nghe sự kiện số dư thay đổi để cập nhật hạn mức khả dụng của thẻ

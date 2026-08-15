@@ -1,0 +1,74 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# MOCK CHUẨN 4 — Transaction Service
+# File catalog-info.yaml THẬT của "transaction-service" trong master-catalog
+# (services/transaction/catalog-info.yaml). Port 10090, /api/v1/transactions.
+# Quan hệ Kafka lấy đúng theo bảng topics của master-catalog:
+#   - producer của "account-events"      -> publishesTo ở đây
+#   - consumer của "transaction-events"  -> KHÔNG khai ở đây (master ghi
+#     producer là account-service, consumer là notification-service — hai
+#     service không có trong bộ mock này nên không thêm để tránh khai hộ).
+# ═══════════════════════════════════════════════════════════════════════════
+
+specVersion: vsf-idp.io/v2
+
+metadata:
+  domain: Online Banking
+  system: online-banking
+  namespace: banking
+
+spec:
+  type: service
+  id: transaction-service
+  name: Transaction Service
+  description: >-
+    Xử lý giao dịch chuyển khoản, thanh toán trong hệ thống Online Banking.
+    Xác thực token qua Auth Service, cập nhật số dư qua Account Service, và
+    phát sự kiện giao dịch cho các service khác.
+
+  owners:
+    members:
+      - user: v.minhkhoa7@vinsmartfuture.tech
+        role: techlead
+      - user: v.thanhha3@vinsmartfuture.tech
+        role: maintainer
+      - user: v.quocbao9@vinsmartfuture.tech
+        role: member
+
+  review:
+    branch: "main"
+
+  topology:
+
+    # ── system: thuộc system nào ─────────────────────────────────────────
+    - ref: system:banking/online-banking
+      reason: Component này thuộc system online-banking
+
+    # ── providesApis: API chính mình expose ─────────────────────────────
+    - ref: providesApis:banking/transaction-service
+      protocol: REST
+      reason: Expose endpoint /api/v1/transactions (port 10090)
+
+    # ── consumesApis: gọi vào API của service khác ─────────────────────────
+    - ref: consumesApis:banking/auth-service
+      protocol: REST
+      reason: Xác thực token trước khi cho phép thực hiện giao dịch
+
+    - ref: consumesApis:banking/account-service
+      protocol: REST
+      reason: Trừ/cộng số dư tài khoản nguồn và đích khi giao dịch hoàn tất
+
+    # ── resource: hạ tầng ─────────────────────────────────────────────────
+    - ref: resource:banking/postgres
+      reason: Lưu trạng thái giao dịch và lịch sử retry
+
+    - ref: resource:platform/kafka
+      reason: Message broker dùng chung toàn platform
+
+    - ref: resource:platform/zipkin
+      reason: Distributed tracing cho luồng gọi liên service khi xử lý giao dịch
+
+    # ── publishesTo: theo bảng topics trong master-catalog, producer của
+    #    account-events chính là transaction-service ─────────────────────
+    - ref: publishesTo:banking/account-events
+      protocol: Kafka
+      reason: Phát sự kiện liên quan tài khoản phát sinh từ giao dịch, cho notification-service nghe
