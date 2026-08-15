@@ -1,0 +1,92 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# MOCK CHUẨN 1/2 — Core Account Service
+# Theo đúng khung catalog-info.template.yaml. Đủ cả 7 kind trong topology.
+# Liên kết với payment-transfer-service (template gốc): account expose API mà
+# payment gọi vào, và consume ngược lại event card để cập nhật hạn mức.
+# ═══════════════════════════════════════════════════════════════════════════
+
+specVersion: vsf-idp.io/v2
+
+metadata:
+  # domain — free-text, hoa/space được, tối đa 128 ký tự.
+  domain: Core Banking
+
+  # system — slug ^[a-z][a-z0-9-]*$.
+  system: banking-core
+
+  # namespace — slug ^[a-z][a-z0-9-]*$.
+  namespace: account
+
+spec:
+  # type: service -> CÓ API surface, cần providesApis.
+  type: service
+
+  # id — slug ^[a-z][a-z0-9-]*$.
+  id: core-account-service
+
+  # name — free-text, không control character.
+  name: Core Account Service
+
+  # description — tuỳ chọn.
+  description: >-
+    Quản lý vòng đời tài khoản (mở/khoá/đóng), số dư và sổ cái nội bộ. Là
+    nguồn sự thật duy nhất cho số dư tài khoản, được các service khác gọi
+    vào để trừ/cộng tiền.
+
+  owners:
+    # ít nhất 1 techlead, role chỉ nhận techlead | maintainer | member.
+    members:
+      - user: v.anhpq8@vinsmartfuture.tech
+        role: techlead
+      - user: v.duchm4@vinsmartfuture.tech
+        role: maintainer
+
+  review:
+    branch: "main"
+
+  topology:
+
+    # ── system: thuộc system nào, khớp metadata.system ──────────────────────
+    - ref: system:account/banking-core
+      reason: Component này thuộc system banking-core
+
+    # ── providesApis: API chính mình expose, name khớp spec.id ─────────────
+    - ref: providesApis:account/core-account-service
+      protocol: REST
+      reason: Expose endpoint /accounts, /accounts/{id}/balance
+
+    # ── consumesApis: API của service khác mà mình gọi vào ─────────────────
+    - ref: consumesApis:identity/kyc-service
+      protocol: REST
+      reason: Kiểm tra thông tin định danh khi mở tài khoản mới
+
+    # ── component: phụ thuộc sibling, không qua API ─────────────────────────
+    # Trỏ tới hệ lõi cũ (mainframe) — namespace 'legacy' không có file catalog
+    # nào trong hệ thống này nên mãi mãi là stub, không rủi ro tạo cycle dù
+    # sau này thêm bao nhiêu service khác.
+    - ref: component:legacy/core-banking-mainframe
+      reason: Đọc dữ liệu lịch sử tài khoản từ hệ lõi cũ qua adapter, chưa migrate hết
+
+    # ── resource: hạ tầng (database, cache, broker...) ──────────────────────
+    - ref: resource:account/account-postgres-primary
+      reason: Datastore chính lưu số dư và sổ cái, nguồn sự thật duy nhất
+
+    - ref: resource:account/account-postgres-replica
+      reason: Read replica phục vụ truy vấn số dư, giảm tải cho primary
+
+    - ref: resource:platform/kafka
+      reason: Message broker dùng chung toàn platform
+
+    # ── publishesTo: topic mà mình publish event vào ────────────────────────
+    - ref: publishesTo:account/account.balance-changed
+      protocol: Kafka
+      reason: Phát sự kiện khi số dư tài khoản thay đổi, dùng cho reconciliation
+
+    - ref: publishesTo:audit/audit.transaction-log
+      protocol: Kafka
+      reason: Ghi log audit mọi thay đổi số dư theo Thông tư 50/2024/TT-NHNN
+
+    # ── consumesFrom: topic mà mình nghe/subscribe ──────────────────────────
+    - ref: consumesFrom:identity/identity.user-created
+      protocol: Kafka
+      reason: Tự động thiết lập hạn mức mặc định khi có khách hàng mới xác thực KYC xong
